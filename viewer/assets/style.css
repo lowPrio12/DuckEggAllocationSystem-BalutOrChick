@@ -1,19 +1,38 @@
 * {
+   margin: 0;
    box-sizing: border-box;
+   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
 body {
+   background-color: white;
+}
+
+header {
+   background-color: #4e7f4e;
+   padding: 10px 0;
+}
+
+nav ul {
+   list-style: none;
    display: flex;
+   justify-content: center;
+}
+
+nav li a {
+   text-decoration: none;
+   color: white;
+   padding: 10px;
 }
 
 h1 {
-font-size: 24;
-text-align: center;
-display: flex;
+   font-size: 24;
+   text-align: center;
+   display: flex;
 }
 
-@media(max-width:600px ){
- body{
-    background-color: black;
- }   
+@media(max-width:600px) {
+   body {
+      background-color: white;
+   }
 }
