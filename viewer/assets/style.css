@@ -1,9 +1,17 @@
-h1 {
+* {
+   box-sizing: border-box;
+}
 
+body {
+   display: flex;
+}
+
+h1 {
 font-size: 24;
 text-align: center;
 display: flex;
 }
+
 @media(max-width:600px ){
  body{
     background-color: black;
