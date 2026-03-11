@@ -65,13 +65,15 @@ if (isset($_POST['delete_batch'])) {
 // Summary Cards
 $stmt = $conn->prepare("SELECT
     SUM(CASE WHEN status='incubating' THEN total_egg ELSE 0 END) AS incubating_eggs,
+    SUM(balut_count) AS balut,
     SUM(chick_count) AS hatched_chicks,
+    SUM(failed_count) AS failed,
     COUNT(*) AS active_batches,
     SUM(chick_count)/SUM(total_egg)*100 AS success_rate
     FROM egg WHERE user_id=?");
+
 $stmt->execute([$user_id]);
 $summary = $stmt->fetch(PDO::FETCH_ASSOC);
-
 // Fetch all batches
 $stmt = $conn->prepare("SELECT * FROM egg WHERE user_id=? ORDER BY date_started_incubation DESC, batch_number DESC");
 $stmt->execute([$user_id]);
@@ -99,8 +101,16 @@ $batches = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 <p><?= $summary['incubating_eggs'] ?? 0 ?></p>
             </div>
             <div class="card">
+                <h3>Balut</h3>
+                <p><?= $summary['balut'] ?? 0 ?></p>
+            </div>
+            <div class="card">
                 <h3>Hatched Chicks</h3>
                 <p><?= $summary['hatched_chicks'] ?? 0 ?></p>
+            </div>
+            <div class="card">
+                <h3>Failed</h3>
+                <p><?= $summary['failed'] ?? 0 ?></p>
             </div>
             <div class="card">
                 <h3>Active Batches</h3>
@@ -135,7 +145,6 @@ $batches = $stmt->fetchAll(PDO::FETCH_ASSOC);
                     <td><?= $batch['chick_count'] ?></td>
                     <td><?= $batch['failed_count'] ?></td>
                     <td class="actions">
-                        <button onclick="openEditModal(<?= $batch['egg_id'] ?>, <?= $batch['total_egg'] ?>, '<?= $batch['status'] ?>', <?= $batch['balut_count'] ?>, <?= $batch['chick_count'] ?>, <?= $batch['failed_count'] ?>)">Edit</button>
                         <form method="post" style="display:inline;" onsubmit="return confirm('Delete this batch?');">
                             <input type="hidden" name="egg_id" value="<?= $batch['egg_id'] ?>">
                             <button type="submit" name="delete_batch">Delete</button>
@@ -158,41 +167,6 @@ $batches = $stmt->fetchAll(PDO::FETCH_ASSOC);
         </div>
     </div>
 
-    <!-- Edit Batch Modal -->
-    <div class="modal" id="editModal">
-        <div class="modal-content">
-            <h3>Edit Batch</h3>
-            <form method="post">
-                <input type="hidden" name="egg_id" id="edit_egg_id">
-
-                <label for="edit_batch_number">Batch Number:</label>
-                <p id="edit_batch_number"></p>
-
-                <label for="edit_total_eggs">Total Eggs:</label>
-                <p id="edit_total_eggs"></p>
-
-                <label for="edit_status">Status:</label>
-                <select name="status" id="edit_status">
-                    <option value="incubating">Incubating</option>
-                    <option value="hatched">Hatched</option>
-                    <option value="failed">Failed</option>
-                </select>
-
-                <label for="edit_balut">Balut Count:</label>
-                <input type="number" name="balut" id="edit_balut" placeholder="Balut Count" required>
-
-                <label for="edit_chick">Chick Count:</label>
-                <input type="number" name="chick" id="edit_chick" placeholder="Chick Count" required>
-
-                <label for="edit_failed">Failed Count:</label>
-                <input type="number" name="failed" id="edit_failed" placeholder="Failed Count" required>
-
-                <button type="submit" name="update_batch" class="save-btn">Update</button>
-                <button type="button" class="cancel-btn" onclick="closeModal('editModal')">Cancel</button>
-            </form>
-        </div>
-    </div>
-
     <script>
         function openModal(id) {
             document.getElementById(id).classList.add('active');
@@ -201,7 +175,7 @@ $batches = $stmt->fetchAll(PDO::FETCH_ASSOC);
         function closeModal(id) {
             document.getElementById(id).classList.remove('active');
         }
-
+/*
         function openEditModal(id, total, status, balut, chick, failed) {
             document.getElementById('editModal').classList.add('active');
             document.getElementById('edit_egg_id').value = id;
@@ -211,7 +185,7 @@ $batches = $stmt->fetchAll(PDO::FETCH_ASSOC);
             document.getElementById('edit_balut').value = balut;
             document.getElementById('edit_chick').value = chick;
             document.getElementById('edit_failed').value = failed;
-        }
+        } */
     </script>
 </body>
 
