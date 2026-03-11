@@ -1,0 +1,139 @@
+body {
+    margin: 0;
+    font-family: Segoe UI, sans-serif;
+    background: #f5f7fb;
+}
+
+/* Layout */
+.wrapper {
+    display: flex;
+}
+
+/* Sidebar */
+.sidebar {
+    width: 230px;
+    background: #1f2937;
+    color: white;
+    height: 100vh;
+    padding: 25px;
+}
+
+.sidebar h2 {
+    margin-bottom: 40px;
+}
+
+.sidebar ul {
+    list-style: none;
+    padding: 0;
+}
+
+.sidebar li {
+    margin-bottom: 15px;
+}
+
+.sidebar a {
+    color: white;
+    text-decoration: none;
+}
+
+/* Main Content */
+.content {
+    flex: 1;
+    padding: 35px;
+}
+
+/* Header */
+.header {
+    margin-bottom: 30px;
+}
+
+.header h1 {
+    margin: 0;
+}
+
+.header p {
+    margin: 5px 0 0;
+    color: #777;
+}
+
+/* Cards */
+.card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 20px;
+    margin-bottom: 30px;
+}
+
+.stat-card {
+    background: white;
+    padding: 20px;
+    border-radius: 12px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+}
+
+.stat-card span {
+    color: #888;
+    font-size: 14px;
+}
+
+.stat-card h2 {
+    margin-top: 8px;
+}
+
+/* Table Box */
+.table-box {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+    overflow: hidden;
+    margin-bottom: 30px;
+}
+
+.table-box h2 {
+    padding: 20px;
+    margin: 0;
+    border-bottom: 1px solid #eee;
+}
+
+/* Tables */
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th {
+    background: #f9fafb;
+    text-align: left;
+    padding: 14px;
+}
+
+td {
+    padding: 14px;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+tr:hover {
+    background: #f8fafc;
+}
+
+/* Status Badge */
+.status-badge {
+    background: #fbbf24;
+    color: white;
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+}
+
+/* Buttons */
+button {
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.btn-delete {
+    background: #dc2626;
+    color: white;
+    padding: 6px 12px;
+}
