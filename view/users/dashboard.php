@@ -542,6 +542,7 @@ $roles = ['admin', 'manager', 'user'];
 
     <!-- Custom JavaScript -->
     <script src="../../assets/users/js/user_create.js"></script>
+    <script src="../../assets/users/js/user-delete.js"></script>
     <script>
         // Pass PHP data to JavaScript
         const userData = {
