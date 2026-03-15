@@ -275,7 +275,7 @@ $roles = ['admin', 'manager', 'user'];
                                             <i class="fas fa-eye"></i>
                                         </button>
                                         <?php if ($user['user_id'] != $_SESSION['user_id']): ?>
-                                            <form method="POST" action="../../controller/users/user-delete.php" style="display:inline" onsubmit="return confirmDelete()">
+                                            <form method="POST" action="../../view/users/user-delete.php" style="display:inline" onsubmit="return confirmDelete()">
                                                 <input type="hidden" name="user_id" value="<?= $user['user_id'] ?>">
                                                 <button type="submit" class="btn-icon delete" title="Delete user">
                                                     <i class="fas fa-trash"></i>
@@ -422,7 +422,7 @@ $roles = ['admin', 'manager', 'user'];
         </div>
     </div>
 
-    <!-- Add User Modal -->
+    <!-- Add User Modal - Only for user creation -->
     <div id="addModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -430,18 +430,27 @@ $roles = ['admin', 'manager', 'user'];
                     <i class="fas fa-user-plus" style="color: #10b981;"></i>
                     Add New User
                 </h2>
-                <button class="modal-close" onclick="closeAddModal()">
+                <button type="button" class="modal-close" onclick="closeAddModal()">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
             <div class="modal-body">
-                <form method="POST" action="../../controller/users/user-add.php">
+                <form id="createUserForm" onsubmit="createUser(event)">
                     <div class="form-group">
                         <label for="add_username">
                             <i class="fas fa-user"></i>
                             Username
                         </label>
-                        <input type="text" id="add_username" name="username" required>
+                        <input
+                            type="text"
+                            id="add_username"
+                            name="username"
+                            required
+                            minlength="3"
+                            maxlength="50"
+                            pattern="[a-zA-Z0-9_]+"
+                            title="Username can only contain letters, numbers, and underscores"
+                            placeholder="Enter username">
                     </div>
 
                     <div class="form-group">
@@ -449,7 +458,16 @@ $roles = ['admin', 'manager', 'user'];
                             <i class="fas fa-lock"></i>
                             Password
                         </label>
-                        <input type="password" id="add_password" name="password" required>
+                        <input
+                            type="password"
+                            id="add_password"
+                            name="password"
+                            required
+                            minlength="6"
+                            placeholder="Enter password">
+                        <small style="color: #64748b; font-size: 0.75rem; margin-top: 0.25rem; display: block;">
+                            Minimum 6 characters
+                        </small>
                     </div>
 
                     <div class="form-group">
@@ -466,6 +484,7 @@ $roles = ['admin', 'manager', 'user'];
 
                     <div class="form-actions">
                         <button type="button" class="btn btn-outline" onclick="closeAddModal()">
+                            <i class="fas fa-times"></i>
                             Cancel
                         </button>
                         <button type="submit" class="btn btn-primary">
@@ -477,6 +496,10 @@ $roles = ['admin', 'manager', 'user'];
             </div>
         </div>
     </div>
+
+    <!-- Include only the user creation JavaScript -->
+    <script src="../../assets/js/user-create.js"></script>
+
 
     <!-- View User Details Modal -->
     <div id="viewModal" class="modal">
@@ -497,7 +520,7 @@ $roles = ['admin', 'manager', 'user'];
     </div>
 
     <!-- Custom JavaScript -->
-    <script src="../../assets/js/user_management.js"></script>
+    <script src="../../assets/users/js/user_create.js"></script>
     <script>
         // Pass PHP data to JavaScript
         const userData = {
