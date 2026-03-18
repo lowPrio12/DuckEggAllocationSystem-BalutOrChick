@@ -15,10 +15,4 @@ VALUES
         'user'
     );
 
--- 3️⃣ Insert 1 activity log for the user
-INSERT INTO
-    user_activity_logs (user_id, action)
-VALUES
-    (1, 'User logged in');
-
 COMMIT;

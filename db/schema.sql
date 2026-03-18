@@ -15,7 +15,7 @@ CREATE TABLE
     egg_id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     total_egg INT NOT NULL,
-    status ENUM ('incubating', 'hatched', 'failed') NOT NULL,
+    status ENUM ('incubating', 'complete') NOT NULL,
     date_started_incubation TIMESTAMP NOT NULL,
     balut_count INT DEFAULT 0,
     failed_count INT DEFAULT 0,
