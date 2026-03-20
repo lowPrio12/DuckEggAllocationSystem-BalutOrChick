@@ -425,7 +425,7 @@ foreach ($batches as $batch) {
                                                 <i class="fas fa-edit"></i>
                                             </button>
                                         <?php endif; ?>
-                                        <form method="post" style="display:inline;" onsubmit="return confirm('Are you sure you want to delete this batch? This action cannot be undone.');">
+                                        <form method="post" style="display:inline;" onsubmit="return confirmDeleteBatch();">
                                             <input type="hidden" name="egg_id" value="<?= $batch['egg_id'] ?>">
                                             <button class="btn btn-danger btn-sm" type="submit" name="delete_batch">
                                                 <i class="fas fa-trash"></i>
@@ -516,137 +516,14 @@ foreach ($batches as $batch) {
         </div>
     </div>
 
+    <!-- Pass PHP data to JavaScript -->
     <script>
-        // JavaScript Code
         // Store remaining eggs data
         const batchRemaining = <?= json_encode($batch_remaining) ?>;
-        let currentRemaining = 0;
-
-        // Modal Functions
-        function openModal(id) {
-            document.getElementById(id).classList.add('active');
-            document.body.style.overflow = 'hidden';
-        }
-
-        function closeModal(id) {
-            document.getElementById(id).classList.remove('active');
-            document.body.style.overflow = 'auto';
-
-            // Reset form
-            const modal = document.getElementById(id);
-            const form = modal.querySelector('form');
-            if (form) form.reset();
-
-            // Hide validation message if visible
-            const validationMsg = document.getElementById('validationMessage');
-            if (validationMsg) validationMsg.style.display = 'none';
-        }
-
-        function openUpdateModal(id, day, remaining) {
-            document.getElementById('updateEggId').value = id;
-            document.getElementById('modalDayNumber').innerText = day;
-            document.getElementById('remainingEggs').innerText = remaining;
-            currentRemaining = remaining;
-
-            document.getElementById('failed_count').value = 0;
-            document.getElementById('balut_count').value = 0;
-            document.getElementById('chick_count').value = 0;
-
-            // Hide validation message
-            document.getElementById('validationMessage').style.display = 'none';
-
-            openModal('updateModal');
-        }
-
-        // Check if total input exceeds remaining eggs
-        function checkRemaining() {
-            const failed = parseInt(document.getElementById('failed_count').value) || 0;
-            const balut = parseInt(document.getElementById('balut_count').value) || 0;
-            const chick = parseInt(document.getElementById('chick_count').value) || 0;
-
-            const total = failed + balut + chick;
-            const validationMsg = document.getElementById('validationMessage');
-            const submitBtn = document.getElementById('submitBtn');
-
-            if (total > currentRemaining) {
-                validationMsg.innerHTML = `<i class="fas fa-exclamation-circle"></i> Total (${total}) exceeds remaining eggs (${currentRemaining})`;
-                validationMsg.style.display = 'block';
-                submitBtn.disabled = true;
-                submitBtn.style.opacity = '0.5';
-                submitBtn.style.cursor = 'not-allowed';
-                return false;
-            } else {
-                validationMsg.style.display = 'none';
-                submitBtn.disabled = false;
-                submitBtn.style.opacity = '1';
-                submitBtn.style.cursor = 'pointer';
-                return true;
-            }
-        }
-
-        // Form Validation
-        function validateAddForm() {
-            const totalEggs = document.getElementById('total_egg').value;
-            if (!totalEggs || totalEggs <= 0) {
-                alert('Please enter a valid number of eggs (greater than 0).');
-                return false;
-            }
-            return true;
-        }
-
-        function validateUpdateForm() {
-            const failed = parseInt(document.getElementById('failed_count').value) || 0;
-            const balut = parseInt(document.getElementById('balut_count').value) || 0;
-            const chick = parseInt(document.getElementById('chick_count').value) || 0;
-
-            if (failed < 0 || balut < 0 || chick < 0) {
-                alert('Values cannot be negative.');
-                return false;
-            }
-
-            if (failed + balut + chick === 0) {
-                alert('Please enter at least one value greater than 0.');
-                return false;
-            }
-
-            // Check if total exceeds remaining
-            if (!checkRemaining()) {
-                return false;
-            }
-
-            return true;
-        }
-
-        // Close modal when clicking outside
-        window.onclick = function(event) {
-            if (event.target.classList.contains('modal')) {
-                event.target.classList.remove('active');
-                document.body.style.overflow = 'auto';
-            }
-        }
-
-        // Close modal with Escape key
-        document.addEventListener('keydown', function(event) {
-            if (event.key === 'Escape') {
-                const activeModal = document.querySelector('.modal.active');
-                if (activeModal) {
-                    activeModal.classList.remove('active');
-                    document.body.style.overflow = 'auto';
-                }
-            }
-        });
-
-        // Auto-hide messages after 5 seconds
-        setTimeout(function() {
-            const messages = document.querySelectorAll('.success-message, .error-message');
-            messages.forEach(function(message) {
-                message.style.opacity = '0';
-                setTimeout(function() {
-                    message.style.display = 'none';
-                }, 300);
-            });
-        }, 5000);
     </script>
+
+    <!-- Include external JavaScript file -->
+    <script src="../../assets/user/js/user_dashboard.js"></script>
 </body>
 
 </html>
