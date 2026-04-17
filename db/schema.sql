@@ -20,7 +20,7 @@ CREATE TABLE
     balut_count INT DEFAULT 0,
     failed_count INT DEFAULT 0,
     chick_count INT DEFAULT 0,
-    batch_number INT NOT NULL UNIQUE,
+    batch_number INT NOT NULL,
     INDEX idx_egg_user (user_id),
     CONSTRAINT fk_egg_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE ON UPDATE CASCADE
   ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_general_ci;
