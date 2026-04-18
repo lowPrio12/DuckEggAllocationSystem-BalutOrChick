@@ -64,6 +64,7 @@ if (isset($_POST['add_batch'])) {
     exit;
 }
 
+
 // ── Delete Batch ─────────────────────────────────────────────────────────
 if (isset($_POST['delete_batch'])) {
     $egg_id = intval($_POST['egg_id']);
