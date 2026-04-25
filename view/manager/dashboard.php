@@ -16,13 +16,22 @@ if (!in_array($activeTab, $validTabs)) {
     $activeTab = 'overview';
 }
 
-// Helper: time ago
+// Helper: format date/time properly
+function formatDateTime($datetime)
+{
+    if (!$datetime) return 'Never';
+    $timestamp = strtotime($datetime);
+    return date('M j, Y g:i A', $timestamp);
+}
+
+// Helper: time ago with more accurate display
 function timeAgo($datetime)
 {
     if (!$datetime) return 'Never';
     $now = new DateTime();
     $ago = new DateTime($datetime);
     $diff = $now->diff($ago);
+
     if ($diff->y > 0) return $diff->y . ' year' . ($diff->y > 1 ? 's' : '') . ' ago';
     elseif ($diff->m > 0) return $diff->m . ' month' . ($diff->m > 1 ? 's' : '') . ' ago';
     elseif ($diff->d > 0) return $diff->d . ' day' . ($diff->d > 1 ? 's' : '') . ' ago';
@@ -133,7 +142,7 @@ $totalChicks  = $conn->query("SELECT SUM(chick_count) FROM egg")->fetchColumn() 
 $totalBalut   = $conn->query("SELECT SUM(balut_count) FROM egg")->fetchColumn() ?: 0;
 $totalFailed  = $conn->query("SELECT SUM(failed_count) FROM egg")->fetchColumn() ?: 0;
 
-// ── Users with summary ────────────────────────────────────────────────────────
+// ── Users with summary - Keep all users for management table ─────────────────
 $stmt = $conn->prepare("
     SELECT u.user_id, u.username, u.user_role, u.created_at,
            COALESCE(SUM(e.balut_count), 0)  AS total_balut,
@@ -148,7 +157,7 @@ $stmt = $conn->prepare("
 $stmt->execute();
 $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// ── Activity logs ─────────────────────────────────────────────────────────────
+// ── Activity logs with proper datetime ───────────────────────────────────────
 $stmt = $conn->prepare("
     SELECT l.*, u.username
     FROM user_activity_logs l
@@ -160,14 +169,33 @@ $stmt = $conn->prepare("
 $stmt->execute();
 $logs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// ── Analytics: Balut per user (top 8) ────────────────────────────────────────
+// ── Analytics: Balut per user (top 8) - FIXED: Only regular users ────────────
 $stmt = $conn->prepare("
     SELECT u.username, COALESCE(SUM(e.balut_count),0) AS total_balut
-    FROM users u LEFT JOIN egg e ON u.user_id = e.user_id
-    GROUP BY u.user_id ORDER BY total_balut DESC LIMIT 8
+    FROM users u 
+    LEFT JOIN egg e ON u.user_id = e.user_id
+    WHERE u.user_role = 'user'
+    GROUP BY u.user_id 
+    ORDER BY total_balut DESC 
+    LIMIT 8
 ");
 $stmt->execute();
 $balutPerUser = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// ── Analytics: User Contribution Comparison - FIXED: Only regular users ──────
+$stmt = $conn->prepare("
+    SELECT u.username, 
+           COALESCE(SUM(e.balut_count),0) AS total_balut,
+           COALESCE(SUM(e.chick_count),0) AS total_chicks,
+           COALESCE(SUM(e.failed_count),0) AS total_failed
+    FROM users u 
+    LEFT JOIN egg e ON u.user_id = e.user_id
+    WHERE u.user_role = 'user'
+    GROUP BY u.user_id 
+    ORDER BY total_balut DESC
+");
+$stmt->execute();
+$userContributions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // ── Analytics: Weekly production trend (last 7 days) ─────────────────────────
 $stmt = $conn->prepare("
@@ -218,6 +246,7 @@ if ($reportType === 'userSummary') {
                COALESCE(SUM(e.chick_count),0) AS total_chicks
         FROM users u LEFT JOIN egg e ON u.user_id=e.user_id
             AND e.date_started_incubation BETWEEN ? AND ?
+        WHERE u.user_role = 'user'
         GROUP BY u.user_id
         HAVING total_balut > 0
         ORDER BY total_balut DESC
@@ -229,181 +258,522 @@ if ($reportType === 'userSummary') {
 // Get incubating and complete batch counts for analytics
 $incubating = $conn->query("SELECT COUNT(*) FROM egg WHERE status='incubating'")->fetchColumn();
 $complete   = $conn->query("SELECT COUNT(*) FROM egg WHERE status='complete'")->fetchColumn();
+
+// Get top performing users (regular users only)
+$stmt = $conn->prepare("
+    SELECT u.username, 
+           COALESCE(SUM(e.balut_count),0) AS total_balut,
+           COALESCE(COUNT(e.egg_id),0) AS batch_count
+    FROM users u 
+    LEFT JOIN egg e ON u.user_id = e.user_id
+    WHERE u.user_role = 'user'
+    GROUP BY u.user_id 
+    ORDER BY total_balut DESC 
+    LIMIT 5
+");
+$stmt->execute();
+$topUsers = $stmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <title>Manager Dashboard | EggFlow</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    <link rel="stylesheet" href="../../assets/manager/css/manager_style.css">
     <style>
-        /* ── Tab System ─────────────────────────────── */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #f1f5f9;
+            color: #1e293b;
+            font-size: 13px;
+        }
+
+        /* ── Dashboard Layout ── */
+        .dashboard {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* ── Sidebar - Compact & Responsive ── */
+        .sidebar {
+            width: 240px;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            color: white;
+            transition: all 0.3s ease;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            z-index: 1000;
+        }
+
+        .sidebar-header {
+            padding: 1.2rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .sidebar-header h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .sidebar-header p {
+            font-size: 0.65rem;
+            opacity: 0.7;
+            margin-top: 0.25rem;
+        }
+
+        .sidebar-menu {
+            list-style: none;
+            padding: 0.75rem 0;
+        }
+
+        .sidebar-menu li {
+            margin: 0.15rem 0;
+        }
+
+        .sidebar-menu li a {
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+            padding: 0.6rem 1.2rem;
+            color: rgba(255, 255, 255, 0.8);
+            text-decoration: none;
+            transition: all 0.2s;
+            font-size: 0.85rem;
+        }
+
+        .sidebar-menu li.active a,
+        .sidebar-menu a:hover {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+
+        /* Mobile menu button */
+        .mobile-menu-btn {
+            display: none;
+            position: fixed;
+            top: 0.75rem;
+            left: 0.75rem;
+            z-index: 1001;
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 0.5rem 0.7rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 999;
+        }
+
+        /* Main Content - Compact */
+        .main-content {
+            flex: 1;
+            margin-left: 240px;
+            padding: 1rem;
+            transition: margin-left 0.3s ease;
+        }
+
+        /* Top Bar - Compact */
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        .welcome-text h1 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: #0f172a;
+        }
+
+        .welcome-text p {
+            font-size: 0.75rem;
+            color: #64748b;
+            margin-top: 0.2rem;
+        }
+
+        .date-badge {
+            background: white;
+            padding: 0.4rem 0.9rem;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: #1e293b;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        /* Tab System */
         .tab-section {
             display: none;
         }
 
         .tab-section.active {
             display: block;
+            animation: fadeIn 0.2s ease;
         }
 
-        .sidebar-menu li.active a,
-        .sidebar-menu a:hover {
-            background: rgba(16, 185, 129, .2);
-            color: #10b981;
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(5px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
-        /* ── Chart Row ──────────────────────────────── */
+        /* Stats Grid - Compact */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .stat-card {
+            background: white;
+            border-radius: 12px;
+            padding: 0.75rem;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+            transition: all 0.2s;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+        }
+
+        .stat-info h3 {
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #64748b;
+            margin-bottom: 0.35rem;
+        }
+
+        .stat-info p {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+        .stat-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+        }
+
+        /* Chart Row - Compact */
         .chart-row {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }
-
-        @media(max-width:900px) {
-            .chart-row {
-                grid-template-columns: 1fr;
-            }
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1rem;
         }
 
         .chart-card {
             background: white;
-            border-radius: 20px;
-            padding: 1.5rem;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, .1);
+            border-radius: 12px;
+            padding: 0.85rem;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
         }
 
         .chart-card h3 {
-            font-size: 1rem;
+            font-size: 0.8rem;
             font-weight: 600;
-            margin-bottom: 1rem;
+            margin-bottom: 0.65rem;
             color: #1e293b;
-        }
-
-        /* ── Reports ─────────────────────────────────── */
-        .report-controls {
-            background: white;
-            border-radius: 20px;
-            padding: 1.5rem 2rem;
-            margin-bottom: 1.5rem;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, .1);
             display: flex;
-            flex-wrap: wrap;
-            gap: 1rem;
-            align-items: flex-end;
-        }
-
-        .report-controls .form-group {
-            margin-bottom: 0;
-        }
-
-        .report-controls label {
-            font-size: .8rem;
-            font-weight: 600;
-            color: #64748b;
-            display: block;
-            margin-bottom: .35rem;
-        }
-
-        .report-controls select,
-        .report-controls input[type="date"] {
-            padding: .6rem .85rem;
-            border: 1px solid #e2e8f0;
-            border-radius: 10px;
-            font-size: .875rem;
-            color: #334155;
-        }
-
-        .btn-outline {
-            background: white;
-            border: 1px solid #e2e8f0;
-            color: #334155;
-            padding: .65rem 1.2rem;
-            border-radius: 12px;
-            font-weight: 500;
-            cursor: pointer;
-            display: inline-flex;
             align-items: center;
-            gap: .5rem;
-            transition: all .2s;
+            gap: 0.4rem;
         }
 
-        .btn-outline:hover {
+        .chart-card h3 i {
+            font-size: 0.9rem;
+        }
+
+        .chart-card canvas {
+            max-height: 220px;
+            width: 100% !important;
+        }
+
+        /* Action Bar - Compact */
+        .action-bar {
+            background: white;
+            border-radius: 12px;
+            padding: 0.75rem;
+            margin-bottom: 1rem;
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        /* Table Container - With Scrollbar */
+        .table-container {
+            background: white;
+            border-radius: 12px;
+            padding: 0.85rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        /* Scrollable table wrapper */
+        .table-scroll-wrapper {
+            overflow-x: auto;
+            overflow-y: visible;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: thin;
+            scrollbar-color: #cbd5e1 #f1f5f9;
+        }
+
+        .table-scroll-wrapper::-webkit-scrollbar {
+            height: 5px;
+            width: 5px;
+        }
+
+        .table-scroll-wrapper::-webkit-scrollbar-track {
             background: #f1f5f9;
-            transform: translateY(-2px);
-        }
-
-        .btn-danger {
-            background: #ef4444;
-            color: white;
-        }
-
-        .btn-danger:hover {
-            background: #dc2626;
-        }
-
-        .btn-warning {
-            background: #f59e0b;
-            color: white;
-        }
-
-        .btn-warning:hover {
-            background: #d97706;
-        }
-
-        /* ── Search ──────────────────────────────────── */
-        .search-box input {
-            padding: .55rem 1rem;
-            border: 1px solid #e2e8f0;
             border-radius: 10px;
-            font-size: .875rem;
-            width: 220px;
         }
 
-        .search-box input:focus {
-            outline: none;
-            border-color: #10b981;
+        .table-scroll-wrapper::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 10px;
+        }
+
+        .table-scroll-wrapper::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
         }
 
         .table-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 1.25rem;
+            margin-bottom: 0.85rem;
+            flex-wrap: wrap;
+            gap: 0.6rem;
         }
 
-        /* ── Action buttons in table ─────────────────── */
-        .action-btns {
+        .table-header h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #1e293b;
             display: flex;
-            gap: .5rem;
+            align-items: center;
+            gap: 0.4rem;
         }
 
-        .btn-sm {
-            padding: .35rem .75rem;
-            font-size: .75rem;
+        .table-header h3 i {
+            font-size: 0.85rem;
+        }
+
+        .data-table {
+            width: 100%;
+            font-size: 0.75rem;
+            border-collapse: collapse;
+            min-width: 500px;
+        }
+
+        .data-table th {
+            text-align: left;
+            padding: 0.6rem 0.5rem;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: #64748b;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .data-table td {
+            padding: 0.5rem 0.5rem;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        /* Report Controls - Compact */
+        .report-controls {
+            background: white;
+            border-radius: 12px;
+            padding: 0.85rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            align-items: flex-end;
+        }
+
+        .report-controls .form-group {
+            flex: 1;
+            min-width: 110px;
+        }
+
+        .report-controls label {
+            font-size: 0.65rem;
+            font-weight: 600;
+            color: #64748b;
+            display: block;
+            margin-bottom: 0.2rem;
+        }
+
+        .report-controls select,
+        .report-controls input[type="date"] {
+            width: 100%;
+            padding: 0.45rem 0.65rem;
+            border: 1px solid #e2e8f0;
             border-radius: 8px;
+            font-size: 0.75rem;
+            color: #334155;
         }
 
-        /* ── Toast notification ──────────────────────── */
+        /* Buttons - Compact */
+        .btn {
+            padding: 0.45rem 0.9rem;
+            font-size: 0.75rem;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .btn-primary {
+            background: #10b981;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #059669;
+        }
+
+        .btn-success {
+            background: #059669;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #047857;
+        }
+
+        .btn-outline {
+            background: white;
+            border: 1px solid #e2e8f0;
+            color: #334155;
+        }
+
+        .btn-outline:hover {
+            background: #f1f5f9;
+        }
+
+        /* Role Badges */
+        .role-badge {
+            display: inline-block;
+            padding: 0.2rem 0.55rem;
+            border-radius: 999px;
+            font-size: 0.65rem;
+            font-weight: 600;
+        }
+
+        .role-badge.user {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .role-badge.manager {
+            background: #fed7aa;
+            color: #92400e;
+        }
+
+        .role-badge.admin {
+            background: #e9d5ff;
+            color: #6b21a5;
+        }
+
+        /* User Info */
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .avatar {
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            background: #10b981;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+
+        /* Activity time styling */
+        .activity-time {
+            font-size: 0.7rem;
+            color: #64748b;
+        }
+
+        .activity-time i {
+            margin-right: 0.2rem;
+            font-size: 0.65rem;
+        }
+
+        .activity-time small {
+            font-size: 0.65rem;
+            color: #94a3b8;
+        }
+
+        /* Toast Notification */
         #toast {
             position: fixed;
-            bottom: 2rem;
-            right: 2rem;
+            bottom: 1.5rem;
+            right: 1.5rem;
             z-index: 9999;
-            padding: 1rem 1.5rem;
-            border-radius: 14px;
+            padding: 0.6rem 1rem;
+            border-radius: 10px;
             color: white;
-            font-size: .9rem;
+            font-size: 0.8rem;
             font-weight: 500;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, .15);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
             display: none;
             align-items: center;
-            gap: .75rem;
-            animation: slideUp .3s ease;
+            gap: 0.5rem;
+            animation: slideUp 0.2s ease;
         }
 
         #toast.show {
@@ -420,107 +790,342 @@ $complete   = $conn->query("SELECT COUNT(*) FROM egg WHERE status='complete'")->
 
         @keyframes slideUp {
             from {
-                transform: translateY(20px);
-                opacity: 0
+                transform: translateY(15px);
+                opacity: 0;
             }
 
             to {
                 transform: translateY(0);
-                opacity: 1
+                opacity: 1;
             }
         }
 
-        /* ── Stat card accent colors ─────────────────── */
-        .stat-card:nth-child(1) .stat-icon {
-            background: rgba(16, 185, 129, .12);
-            color: #10b981;
+        /* Modal - Compact */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
         }
 
-        .stat-card:nth-child(2) .stat-icon {
-            background: rgba(59, 130, 246, .12);
-            color: #3b82f6;
+        .modal.active {
+            display: flex;
         }
 
-        .stat-card:nth-child(3) .stat-icon {
-            background: rgba(245, 158, 11, .12);
-            color: #f59e0b;
+        .modal-content {
+            background: white;
+            border-radius: 16px;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+            animation: modalSlideIn 0.2s ease;
         }
 
-        .stat-card:nth-child(4) .stat-icon {
-            background: rgba(139, 92, 246, .12);
-            color: #8b5cf6;
+        @keyframes modalSlideIn {
+            from {
+                transform: translateY(-30px);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
         }
 
-        .stat-card:nth-child(5) .stat-icon {
-            background: rgba(236, 72, 153, .12);
-            color: #ec4899;
+        .modal-header {
+            padding: 0.85rem 1.2rem;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
-        .stat-card:nth-child(6) .stat-icon {
-            background: rgba(239, 68, 68, .12);
-            color: #ef4444;
+        .modal-header h3 {
+            font-size: 1rem;
+            margin: 0;
         }
 
-        /* ── Spinner ─────────────────────────────────── */
+        .close {
+            font-size: 1.3rem;
+            cursor: pointer;
+            color: #94a3b8;
+            background: none;
+            border: none;
+        }
+
+        .modal-body {
+            padding: 1.2rem;
+        }
+
+        .modal-footer {
+            padding: 0.85rem 1.2rem;
+            border-top: 1px solid #e2e8f0;
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.6rem;
+        }
+
+        .form-group {
+            margin-bottom: 0.85rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.35rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: #334155;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 0.5rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 0.8rem;
+        }
+
+        /* Alert */
+        .alert {
+            padding: 0.6rem 0.9rem;
+            border-radius: 10px;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            font-size: 0.8rem;
+        }
+
+        .alert-success {
+            background: #dcfce7;
+            color: #166534;
+            border-left: 3px solid #10b981;
+        }
+
+        /* Spinner */
         .spinner {
-            width: 20px;
-            height: 20px;
-            border: 3px solid rgba(255, 255, 255, .3);
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
             border-top-color: white;
             border-radius: 50%;
-            animation: spin .6s linear infinite;
+            animation: spin 0.6s linear infinite;
             display: inline-block;
         }
 
         @keyframes spin {
             to {
-                transform: rotate(360deg)
+                transform: rotate(360deg);
             }
         }
 
+        /* Badges */
         .badge-incubating {
             background: #dbeafe;
             color: #1d4ed8;
-            padding: .2rem .6rem;
+            padding: 0.2rem 0.55rem;
             border-radius: 999px;
-            font-size: .75rem;
+            font-size: 0.65rem;
             font-weight: 600;
         }
 
         .badge-complete {
             background: #dcfce7;
             color: #15803d;
-            padding: .2rem .6rem;
+            padding: 0.2rem 0.55rem;
             border-radius: 999px;
-            font-size: .75rem;
+            font-size: 0.65rem;
             font-weight: 600;
         }
 
-        /* Alert styles */
-        .alert {
-            padding: 1rem 1.5rem;
-            border-radius: 12px;
-            margin-bottom: 1.5rem;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
+        /* Stat card accent colors */
+        .stat-card:nth-child(1) .stat-icon {
+            background: rgba(16, 185, 129, 0.12);
+            color: #10b981;
         }
 
-        .alert-success {
-            background: #dcfce7;
-            color: #166534;
-            border-left: 4px solid #10b981;
+        .stat-card:nth-child(2) .stat-icon {
+            background: rgba(59, 130, 246, 0.12);
+            color: #3b82f6;
+        }
+
+        .stat-card:nth-child(3) .stat-icon {
+            background: rgba(245, 158, 11, 0.12);
+            color: #f59e0b;
+        }
+
+        .stat-card:nth-child(4) .stat-icon {
+            background: rgba(139, 92, 246, 0.12);
+            color: #8b5cf6;
+        }
+
+        .stat-card:nth-child(5) .stat-icon {
+            background: rgba(236, 72, 153, 0.12);
+            color: #ec4899;
+        }
+
+        .stat-card:nth-child(6) .stat-icon {
+            background: rgba(239, 68, 68, 0.12);
+            color: #ef4444;
+        }
+
+        /* Search box */
+        .search-box input {
+            padding: 0.4rem 0.7rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            width: 200px;
+        }
+
+        /* Mobile Responsive Styles - Compact */
+        @media (max-width: 768px) {
+            .mobile-menu-btn {
+                display: block;
+            }
+
+            .sidebar {
+                transform: translateX(-100%);
+                width: 260px;
+            }
+
+            .sidebar.open {
+                transform: translateX(0);
+            }
+
+            .main-content {
+                margin-left: 0;
+                padding: 0.85rem;
+                padding-top: 3.5rem;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+                gap: 0.6rem;
+            }
+
+            .stat-info p {
+                font-size: 1rem;
+            }
+
+            .stat-icon {
+                width: 28px;
+                height: 28px;
+                font-size: 0.9rem;
+            }
+
+            .chart-row {
+                grid-template-columns: 1fr;
+                gap: 0.6rem;
+            }
+
+            .chart-card canvas {
+                max-height: 200px;
+            }
+
+            .top-bar {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .welcome-text h1 {
+                font-size: 1.1rem;
+            }
+
+            .report-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .report-controls .form-group {
+                min-width: auto;
+            }
+
+            .btn {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .action-bar {
+                flex-direction: column;
+            }
+
+            .action-bar .btn {
+                width: 100%;
+            }
+
+            .table-header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .search-box input {
+                width: 100%;
+            }
+
+            #toast {
+                bottom: 1rem;
+                right: 1rem;
+                left: 1rem;
+                text-align: center;
+                justify-content: center;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 0.5rem;
+            }
+
+            .chart-card {
+                padding: 0.65rem;
+            }
+
+            .table-container {
+                padding: 0.65rem;
+            }
+
+            .data-table {
+                font-size: 0.7rem;
+                min-width: 450px;
+            }
+
+            .data-table th,
+            .data-table td {
+                padding: 0.4rem 0.35rem;
+            }
+
+            .avatar {
+                width: 22px;
+                height: 22px;
+                font-size: 0.6rem;
+            }
         }
     </style>
 </head>
 
 <body>
+    <!-- Mobile Menu Button -->
+    <button class="mobile-menu-btn" id="mobileMenuBtn" onclick="toggleMobileMenu()">
+        <i class="fas fa-bars"></i>
+    </button>
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeMobileMenu()"></div>
+
     <div class="dashboard">
         <!-- Sidebar -->
-        <aside class="sidebar">
+        <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <h2><i class="fas fa-chart-line"></i> EggFlow Manager</h2>
-                <p>Balut Management & Oversight</p>
+                <h2><i class="fas fa-chart-line"></i> EggFlow</h2>
+                <p>Manager Panel</p>
             </div>
             <ul class="sidebar-menu">
                 <li class="nav-item <?= $activeTab == 'overview' ? 'active' : '' ?>" data-tab="overview">
@@ -547,10 +1152,10 @@ $complete   = $conn->query("SELECT COUNT(*) FROM egg WHERE status='complete'")->
             <div class="top-bar">
                 <div class="welcome-text">
                     <h1>Welcome, <?= htmlspecialchars($_SESSION['user_name'] ?? 'Manager') ?></h1>
-                    <p id="page-subtitle"><?= $activeTab == 'overview' ? 'Overview & key metrics' : ($activeTab == 'analytics' ? 'Production analytics' : 'Generate & export reports') ?></p>
+                    <p id="page-subtitle"><?= $activeTab == 'overview' ? 'Overview & metrics' : ($activeTab == 'analytics' ? 'Production analytics (Users only)' : 'Generate reports') ?></p>
                 </div>
                 <div class="date-badge">
-                    <i class="far fa-calendar-alt"></i> <?= date('l, F j, Y') ?>
+                    <i class="far fa-calendar-alt"></i> <?= date('M d, Y') ?>
                 </div>
             </div>
 
@@ -607,99 +1212,97 @@ $complete   = $conn->query("SELECT COUNT(*) FROM egg WHERE status='complete'")->
                     </div>
                 </div>
 
-                <div class="action-bar">
-                    <button class="btn btn-primary" onclick="location.href='../users/user-management.php'">
-                        <i class="fas fa-user-plus"></i> Add New User
-                    </button>
-                    <form method="post" style="display:inline;">
-                        <button type="submit" name="distribute_profits" class="btn btn-success"
-                            onclick="return confirm('Distribute profits based on balut counts?')">
-                            <i class="fas fa-hand-holding-usd"></i> Distribute Profits
-                        </button>
-                    </form>
-                </div>
-
-                <!-- Users Summary -->
+                <!-- Users Summary Table - Scrollable -->
                 <div class="table-container">
                     <div class="table-header">
-                        <h3>Users & Balut Summary</h3>
+                        <h3><i class="fas fa-users"></i> Users & Balut Summary</h3>
                     </div>
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th>User</th>
-                                <th>Role</th>
-                                <th>Joined</th>
-                                <th>Batches</th>
-                                <th>Total Balut</th>
-                                <th>Total Chicks</th>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($users as $u): ?>
+                    <div class="table-scroll-wrapper">
+                        <table class="data-table">
+                            <thead>
                                 <tr>
-                                    <td>
-                                        <div class="user-info">
-                                            <div class="avatar"><?= strtoupper(substr($u['username'], 0, 1)) ?></div>
-                                            <div><?= htmlspecialchars($u['username']) ?></div>
-                                        </div>
+                                    <th>User</th>
+                                    <th>Role</th>
+                                    <th>Joined</th>
+                                    <th>Batches</th>
+                                    <th>Balut</th>
+                                    <th>Chicks</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($users as $u): ?>
+                                    <tr>
+                                        <td>
+                                            <div class="user-info">
+                                                <div class="avatar"><?= strtoupper(substr($u['username'], 0, 1)) ?></div>
+                                                <div><?= htmlspecialchars($u['username']) ?></div>
+                                            </div>
+                    </div>
+                    <td><span class="role-badge <?= $u['user_role'] ?>"><?= ucfirst($u['user_role']) ?></span></td>
+                    <td><?= date('M d, Y', strtotime($u['created_at'])) ?>
                 </div>
-                <td><span class="role-badge <?= $u['user_role'] ?>"><?= ucfirst($u['user_role']) ?></span></td>
-                <td><?= date('M d, Y', strtotime($u['created_at'])) ?></td>
                 <td><?= number_format($u['batch_count']) ?>
             </div>
-            <td><strong><?= number_format($u['total_balut']) ?></strong></td>
-            <td><?= number_format($u['total_chicks']) ?>
+            <td><strong><?= number_format($u['total_balut']) ?></strong>
     </div>
+    <td><?= number_format($u['total_chicks']) ?></div>
+        </tr>
+    <?php endforeach; ?>
+    </tbody>
+    </table>
+    </div>
+    </div>
+
+    <!-- Activity Logs Table - Scrollable with Real Time -->
+    <div class="table-container">
+        <div class="table-header">
+            <h3><i class="fas fa-history"></i> Recent Activity (Real Time)</h3>
+        </div>
+        <div class="table-scroll-wrapper">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Date & Time</th>
+                        <th>User</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if ($logs): ?>
+                        <?php foreach ($logs as $log): ?>
+                            <tr>
+                                <td class="activity-time">
+                                    <i class="far fa-clock"></i> <?= formatDateTime($log['log_date']) ?>
+                                    <small>(<?= timeAgo($log['log_date']) ?>)</small>
+        </div>
+    <td><?= htmlspecialchars($log['username']) ?></div>
+    <td><?= htmlspecialchars($log['action']) ?></div>
+        </tr>
+    <?php endforeach; ?>
+<?php else: ?>
+    <tr>
+        <td colspan="3" style="text-align:center">No activity logs found</div>
     </tr>
-<?php endforeach; ?>
+<?php endif; ?>
 </tbody>
 </table>
 </div>
-
-<!-- Activity Logs -->
-<div class="table-container">
-    <div class="table-header">
-        <h3>Recent User Activity</h3>
-    </div>
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Time</th>
-                <th>User</th>
-                <th>Action</th>
-        </thead>
-        <tbody>
-            <?php if ($logs): ?>
-                <?php foreach ($logs as $log): ?>
-                    <tr>
-                        <td class="activity-time"><?= timeAgo($log['log_date']) ?></td>
-                        <td><?= htmlspecialchars($log['username']) ?></td>
-                        <td><?= htmlspecialchars($log['action']) ?></td>
-                    </tr>
-                <?php endforeach; ?>
-            <?php else: ?>
-                <tr>
-                    <td colspan="3" style="text-align:center">No activity logs found</td>
-                </tr>
-            <?php endif; ?>
-        </tbody>
-    </table>
 </div>
 </div>
 
 <!-- ═══════════════ ANALYTICS TAB ═══════════════ -->
 <div id="analytics-section" class="tab-section <?= $activeTab == 'analytics' ? 'active' : '' ?>">
-    <div class="stats-grid" style="margin-bottom:2rem;">
+    <div class="stats-grid" style="margin-bottom:1rem;">
         <div class="stat-card">
             <div class="stat-info">
-                <h3>Avg Balut / Batch</h3>
+                <h3>Avg Balut/Batch</h3>
                 <p><?= $totalBatches > 0 ? number_format($totalBalut / $totalBatches, 1) : '0' ?></p>
             </div>
             <div class="stat-icon"><i class="fas fa-calculator"></i></div>
         </div>
         <div class="stat-card">
             <div class="stat-info">
-                <h3>Avg Chicks / Batch</h3>
+                <h3>Avg Chicks/Batch</h3>
                 <p><?= $totalBatches > 0 ? number_format($totalChicks / $totalBatches, 1) : '0' ?></p>
             </div>
             <div class="stat-icon"><i class="fas fa-dove"></i></div>
@@ -722,73 +1325,158 @@ $complete   = $conn->query("SELECT COUNT(*) FROM egg WHERE status='complete'")->
 
     <div class="chart-row">
         <div class="chart-card">
-            <h3><i class="fas fa-chart-bar" style="color:#10b981;margin-right:.5rem;"></i>Balut per User</h3>
+            <h3><i class="fas fa-chart-bar" style="color:#10b981;"></i> Balut per User (Users Only)</h3>
             <canvas id="balutChart"></canvas>
         </div>
         <div class="chart-card">
-            <h3><i class="fas fa-chart-line" style="color:#3b82f6;margin-right:.5rem;"></i>Weekly Production Trend (Last 7 Days)</h3>
+            <h3><i class="fas fa-chart-line" style="color:#3b82f6;"></i> Weekly Trend (Last 7 Days)</h3>
             <canvas id="trendChart"></canvas>
         </div>
     </div>
 
     <div class="chart-row">
         <div class="chart-card">
-            <h3><i class="fas fa-chart-pie" style="color:#f59e0b;margin-right:.5rem;"></i>Outcome Distribution</h3>
+            <h3><i class="fas fa-chart-pie" style="color:#f59e0b;"></i> Outcome Distribution</h3>
             <canvas id="pieChart"></canvas>
         </div>
         <div class="chart-card">
-            <h3><i class="fas fa-chart-area" style="color:#8b5cf6;margin-right:.5rem;"></i>Batch Status Overview</h3>
+            <h3><i class="fas fa-chart-area" style="color:#8b5cf6;"></i> Batch Status</h3>
             <canvas id="statusChart"></canvas>
-            <p style="text-align:center;color:#64748b;font-size:.85rem;margin-top:.75rem;">
+            <p style="text-align:center;color:#64748b;font-size:0.7rem;margin-top:0.5rem;">
                 Incubating: <strong><?= $incubating ?></strong> &nbsp;|&nbsp; Complete: <strong><?= $complete ?></strong>
             </p>
         </div>
     </div>
-</div>
 
-<!-- ═══════════════ REPORTS TAB ═══════════════ -->
-<div id="reports-section" class="tab-section <?= $activeTab == 'reports' ? 'active' : '' ?>">
-    <div class="report-controls">
-        <div class="form-group">
-            <label>Report Type</label>
-            <select id="reportType">
-                <option value="userSummary" <?= $reportType == 'userSummary' ? 'selected' : '' ?>>User Summary</option>
-                <option value="batchLog" <?= $reportType == 'batchLog' ? 'selected' : '' ?>>Batch Log</option>
-                <option value="profitDistribution" <?= $reportType == 'profitDistribution' ? 'selected' : '' ?>>Profit Distribution</option>
-            </select>
+    <!-- Top Performing Users Table - Scrollable -->
+    <div class="table-container">
+        <div class="table-header">
+            <h3><i class="fas fa-trophy" style="color:#f59e0b;"></i> Top Performing Users (Users Only)</h3>
         </div>
-        <div class="form-group">
-            <label>Start Date</label>
-            <input type="date" id="startDate" value="<?= $startDate ?>">
+        <div class="table-scroll-wrapper">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>Username</th>
+                        <th>Total Balut</th>
+                        <th>Batches</th>
+                        <th>Avg/Batch</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php
+                    $rank = 1;
+                    foreach ($topUsers as $user):
+                        $avgBalut = $user['batch_count'] > 0 ? number_format($user['total_balut'] / $user['batch_count'], 1) : 0;
+                    ?>
+                        <tr>
+                            <td style="font-weight: bold;">#<?= $rank++ ?>
         </div>
-        <div class="form-group">
-            <label>End Date</label>
-            <input type="date" id="endDate" value="<?= $endDate ?>">
+    <td>
+        <div class="user-info">
+            <div class="avatar"><?= strtoupper(substr($user['username'], 0, 1)) ?></div><?= htmlspecialchars($user['username']) ?>
         </div>
-        <button class="btn btn-primary" id="generateReportBtn" onclick="generateReport()">
-            <i class="fas fa-chart-bar"></i> Generate
-        </button>
-        <button class="btn btn-outline" id="exportCsvBtn" onclick="exportCSV()">
-            <i class="fas fa-file-csv"></i> Export CSV
-        </button>
+        </div>
+    <td><strong><?= number_format($user['total_balut']) ?></strong></div>
+    <td><?= number_format($user['batch_count']) ?></div>
+    <td><?= $avgBalut ?></div>
+        </tr>
+    <?php endforeach; ?>
+    <?php if (empty($topUsers)): ?>
+        <tr>
+            <td colspan="5" style="text-align:center">No production data available for regular users</div>
+        </tr>
+    <?php endif; ?>
+    </tbody>
+    </table>
+    </div>
     </div>
 
-    <div class="table-container" id="reportPreview">
+    <!-- User Contribution Comparison Table - Scrollable -->
+    <div class="table-container">
         <div class="table-header">
-            <h3 id="reportTitle">Report Preview</h3>
+            <h3><i class="fas fa-chart-simple"></i> User Contribution (Users Only)</h3>
         </div>
-        <div id="reportContent" style="padding:.5rem;color:#64748b;">
-            <?php if ($reportData): ?>
-                <?php
-                $titles = [
-                    'userSummary' => 'User Summary Report',
-                    'batchLog' => 'Batch Log Report',
-                    'profitDistribution' => 'Profit Distribution Report',
-                ];
-                $title = $titles[$reportType] ?? 'Report';
-                echo "<script>document.getElementById('reportTitle').innerHTML = '" . $title . "';</script>";
-                ?>
-                <div style="overflow-x:auto">
+        <div class="table-scroll-wrapper">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>Balut</th>
+                        <th>Chicks</th>
+                        <th>Failed</th>
+                        <th>Success Rate</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($userContributions as $user):
+                        $total = $user['total_balut'] + $user['total_chicks'] + $user['total_failed'];
+                        $successRate = $total > 0 ? number_format((($user['total_balut'] + $user['total_chicks']) / $total) * 100, 1) : 0;
+                    ?>
+                        <tr>
+                            <td>
+                                <div class="user-info">
+                                    <div class="avatar"><?= strtoupper(substr($user['username'], 0, 1)) ?></div><?= htmlspecialchars($user['username']) ?>
+                                </div>
+        </div>
+    <td><strong><?= number_format($user['total_balut']) ?></strong></div>
+    <td><?= number_format($user['total_chicks']) ?></div>
+    <td><?= number_format($user['total_failed']) ?></div>
+    <td><?= $successRate ?>%</div>
+        </tr>
+    <?php endforeach; ?>
+    <?php if (empty($userContributions)): ?>
+        <tr>
+            <td colspan="5" style="text-align:center">No contribution data available</div>
+        </tr>
+    <?php endif; ?>
+    </tbody>
+    </table>
+    </div>
+    </div>
+    </div>
+
+    <!-- ═══════════════ REPORTS TAB ═══════════════ -->
+    <div id="reports-section" class="tab-section <?= $activeTab == 'reports' ? 'active' : '' ?>">
+        <div class="report-controls">
+            <div class="form-group">
+                <label>Report Type</label>
+                <select id="reportType">
+                    <option value="userSummary" <?= $reportType == 'userSummary' ? 'selected' : '' ?>>User Summary</option>
+                    <option value="batchLog" <?= $reportType == 'batchLog' ? 'selected' : '' ?>>Batch Log</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Start Date</label>
+                <input type="date" id="startDate" value="<?= $startDate ?>">
+            </div>
+            <div class="form-group">
+                <label>End Date</label>
+                <input type="date" id="endDate" value="<?= $endDate ?>">
+            </div>
+            <button class="btn btn-primary" onclick="generateReport()">
+                <i class="fas fa-chart-bar"></i> Generate
+            </button>
+            <button class="btn btn-outline" onclick="exportCSV()">
+                <i class="fas fa-file-csv"></i> Export CSV
+            </button>
+        </div>
+
+        <div class="table-container" id="reportPreview">
+            <div class="table-header">
+                <h3 id="reportTitle">Report Preview</h3>
+            </div>
+            <div class="table-scroll-wrapper" id="reportContent">
+                <?php if ($reportData): ?>
+                    <?php
+                    $titles = [
+                        'userSummary' => 'User Summary Report',
+                        'batchLog' => 'Batch Log Report',
+                    ];
+                    $title = $titles[$reportType] ?? 'Report';
+                    echo "<script>document.getElementById('reportTitle').innerHTML = '" . $title . "';</script>";
+                    ?>
                     <table class="data-table">
                         <thead>
                             <tr>
@@ -801,413 +1489,396 @@ $complete   = $conn->query("SELECT COUNT(*) FROM egg WHERE status='complete'")->
                             <?php foreach ($reportData as $row): ?>
                                 <tr>
                                     <?php foreach ($row as $value): ?>
-                                        <td><?= htmlspecialchars($value ?? '') ?></td>
-                                    <?php endforeach; ?>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            <?php else: ?>
-                Select a report type and click Generate.
-            <?php endif; ?>
+                                        <td><?= htmlspecialchars($value ?? '') ?>
+            </div>
+        <?php endforeach; ?>
+        </tr>
+    <?php endforeach; ?>
+    </tbody>
+    </table>
+<?php else: ?>
+    <p style="text-align:center; padding: 1.5rem; color:#94a3b8;">Select a report type and click Generate.</p>
+<?php endif; ?>
         </div>
     </div>
-</div>
-</main>
-</div>
-
-<!-- ── Add / Edit User Modal ─────────────────────────────────────── -->
-<div id="userModal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3 id="modalTitle"><i class="fas fa-user-plus"></i> Add New User</h3>
-            <button class="close" onclick="closeModal()">&times;</button>
-        </div>
-        <form id="userForm" onsubmit="saveUser(event)">
-            <input type="hidden" id="editUserId" value="">
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>Username</label>
-                    <input type="text" id="modalUsername" name="username" required minlength="3" maxlength="50">
-                </div>
-                <div class="form-group">
-                    <label id="passwordLabel">Password</label>
-                    <input type="password" id="modalPassword" name="password" minlength="6">
-                </div>
-                <div class="form-group">
-                    <label>Role</label>
-                    <select id="modalRole" name="role">
-                        <option value="user">Regular User</option>
-                        <option value="manager">Manager</option>
-                    </select>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button type="submit" class="btn btn-primary" id="saveBtn">
-                    <i class="fas fa-save"></i> Save
-                </button>
-            </div>
-        </form>
     </div>
-</div>
+    </main>
+    </div>
 
-<!-- Toast -->
-<div id="toast"><i class="fas fa-check-circle"></i> <span id="toastMsg"></span></div>
+    <!-- Modal -->
+    <div id="userModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle"><i class="fas fa-user-plus"></i> Add User</h3>
+                <button class="close" onclick="closeModal()">&times;</button>
+            </div>
+            <form id="userForm" onsubmit="saveUser(event)">
+                <input type="hidden" id="editUserId" value="">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Username</label>
+                        <input type="text" id="modalUsername" required minlength="3" maxlength="50">
+                    </div>
+                    <div class="form-group">
+                        <label id="passwordLabel">Password</label>
+                        <input type="password" id="modalPassword" minlength="6">
+                    </div>
+                    <div class="form-group">
+                        <label>Role</label>
+                        <select id="modalRole">
+                            <option value="user">Regular User</option>
+                            <option value="manager">Manager</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="saveBtn">
+                        <i class="fas fa-save"></i> Save
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
 
-<!-- Chart.js -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script>
-    // ── PHP data bridged to JS ──────────────────────────────────────────────────
-    const PHP = {
-        currentUserId: <?= (int)$_SESSION['user_id'] ?>,
-        balutPerUser: <?= json_encode($balutPerUser) ?>,
-        weeklyTrend: <?= json_encode($weeklyTrend) ?>,
-        totalBalut: <?= (int)$totalBalut ?>,
-        totalChicks: <?= (int)$totalChicks ?>,
-        totalFailed: <?= (int)$totalFailed ?>,
-        incubating: <?= (int)$incubating ?>,
-        complete: <?= (int)$complete ?>,
-    };
+    <!-- Toast -->
+    <div id="toast"><i class="fas fa-check-circle"></i> <span id="toastMsg"></span></div>
 
-    // ── Tab Navigation ──────────────────────────────────────────────────────────
-    const tabTitles = {
-        overview: 'Overview & key metrics',
-        analytics: 'Production analytics',
-        reports: 'Generate & export reports',
-    };
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script>
+        // PHP data
+        const PHP = {
+            balutPerUser: <?= json_encode($balutPerUser) ?>,
+            weeklyTrend: <?= json_encode($weeklyTrend) ?>,
+            totalBalut: <?= (int)$totalBalut ?>,
+            totalChicks: <?= (int)$totalChicks ?>,
+            totalFailed: <?= (int)$totalFailed ?>,
+            incubating: <?= (int)$incubating ?>,
+            complete: <?= (int)$complete ?>,
+        };
 
-    // Handle tab clicks for analytics and reports tabs
-    document.querySelectorAll('.nav-item[data-tab]').forEach(li => {
-        li.querySelector('a').addEventListener('click', (e) => {
-            e.preventDefault();
-            const tab = li.dataset.tab;
+        // Mobile Menu
+        function toggleMobileMenu() {
+            document.getElementById('sidebar').classList.toggle('open');
+            const overlay = document.getElementById('sidebarOverlay');
+            overlay.style.display = document.getElementById('sidebar').classList.contains('open') ? 'block' : 'none';
+        }
 
-            // Update URL without page reload
-            const url = new URL(window.location.href);
-            url.searchParams.set('tab', tab);
-            window.history.pushState({}, '', url);
+        function closeMobileMenu() {
+            document.getElementById('sidebar').classList.remove('open');
+            document.getElementById('sidebarOverlay').style.display = 'none';
+        }
 
-            // Update active states
+        // Close mobile menu on link click
+        document.querySelectorAll('.sidebar-menu a').forEach(link => {
+            link.addEventListener('click', () => {
+                if (window.innerWidth <= 768) closeMobileMenu();
+            });
+        });
+
+        // Tab navigation
+        const tabTitles = {
+            overview: 'Overview & metrics',
+            analytics: 'Production analytics (Users only)',
+            reports: 'Generate reports',
+        };
+
+        document.querySelectorAll('.nav-item[data-tab]').forEach(li => {
+            li.querySelector('a').addEventListener('click', (e) => {
+                e.preventDefault();
+                const tab = li.dataset.tab;
+                const url = new URL(window.location.href);
+                url.searchParams.set('tab', tab);
+                window.history.pushState({}, '', url);
+
+                document.querySelectorAll('.nav-item').forEach(x => x.classList.remove('active'));
+                li.classList.add('active');
+                document.querySelectorAll('.tab-section').forEach(s => s.classList.remove('active'));
+                document.getElementById(tab + '-section').classList.add('active');
+                document.getElementById('page-subtitle').textContent = tabTitles[tab] ?? '';
+
+                if (tab === 'analytics') initCharts();
+                if (window.innerWidth <= 768) closeMobileMenu();
+            });
+        });
+
+        window.addEventListener('popstate', () => {
+            const params = new URLSearchParams(window.location.search);
+            const tab = params.get('tab') || 'overview';
             document.querySelectorAll('.nav-item').forEach(x => x.classList.remove('active'));
-            li.classList.add('active');
+            document.querySelector(`.nav-item[data-tab="${tab}"]`).classList.add('active');
             document.querySelectorAll('.tab-section').forEach(s => s.classList.remove('active'));
             document.getElementById(tab + '-section').classList.add('active');
             document.getElementById('page-subtitle').textContent = tabTitles[tab] ?? '';
-
             if (tab === 'analytics') initCharts();
         });
-    });
 
-    // Handle browser back/forward buttons
-    window.addEventListener('popstate', () => {
-        const params = new URLSearchParams(window.location.search);
-        const tab = params.get('tab') || 'overview';
-
-        document.querySelectorAll('.nav-item').forEach(x => x.classList.remove('active'));
-        document.querySelector(`.nav-item[data-tab="${tab}"]`).classList.add('active');
-        document.querySelectorAll('.tab-section').forEach(s => s.classList.remove('active'));
-        document.getElementById(tab + '-section').classList.add('active');
-        document.getElementById('page-subtitle').textContent = tabTitles[tab] ?? '';
-
-        if (tab === 'analytics') initCharts();
-    });
-
-    // ── Modal ────────────────────────────────────────────────────────────────────
-    function openModal() {
-        document.getElementById('modalTitle').innerHTML = '<i class="fas fa-user-plus"></i> Add New User';
-        document.getElementById('editUserId').value = '';
-        document.getElementById('modalUsername').value = '';
-        document.getElementById('modalPassword').value = '';
-        document.getElementById('modalRole').value = 'user';
-        document.getElementById('passwordLabel').textContent = 'Password';
-        document.getElementById('modalPassword').required = true;
-        document.getElementById('userModal').classList.add('active');
-    }
-
-    function openEditModal(id, username, role) {
-        document.getElementById('modalTitle').innerHTML = '<i class="fas fa-edit"></i> Edit User';
-        document.getElementById('editUserId').value = id;
-        document.getElementById('modalUsername').value = username;
-        document.getElementById('modalPassword').value = '';
-        document.getElementById('modalRole').value = role;
-        document.getElementById('passwordLabel').textContent = 'Password (leave blank to keep unchanged)';
-        document.getElementById('modalPassword').required = false;
-        document.getElementById('userModal').classList.add('active');
-    }
-
-    function closeModal() {
-        document.getElementById('userModal').classList.remove('active');
-    }
-
-    // ── Save User (create/edit) ──────────────────────────────────────────────────
-    function saveUser(e) {
-        e.preventDefault();
-        const id = document.getElementById('editUserId').value;
-        const username = document.getElementById('modalUsername').value.trim();
-        const password = document.getElementById('modalPassword').value;
-        const role = document.getElementById('modalRole').value;
-        const action = id ? 'edit_user' : 'create_user';
-        const btn = document.getElementById('saveBtn');
-
-        const body = new FormData();
-        body.append('action', action);
-        body.append('username', username);
-        body.append('password', password);
-        body.append('role', role);
-        if (id) body.append('user_id', id);
-
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner"></span> Saving…';
-
-        fetch(window.location.href, {
-                method: 'POST',
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest'
-                },
-                body
-            })
-            .then(r => r.json())
-            .then(res => {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-save"></i> Save';
-                if (res.success) {
-                    closeModal();
-                    showToast(res.message, 'success');
-                    setTimeout(() => location.reload(), 1200);
-                } else {
-                    showToast(res.message, 'error');
-                }
-            })
-            .catch(() => {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-save"></i> Save';
-                showToast('Something went wrong.', 'error');
-            });
-    }
-
-    // ── Delete User ───────────────────────────────────────────────────────────────
-    function deleteUser(id, username) {
-        if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
-        const body = new FormData();
-        body.append('action', 'delete_user');
-        body.append('user_id', id);
-        fetch(window.location.href, {
-                method: 'POST',
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest'
-                },
-                body
-            })
-            .then(r => r.json())
-            .then(res => {
-                if (res.success) {
-                    showToast(res.message, 'success');
-                    setTimeout(() => location.reload(), 1000);
-                } else {
-                    showToast(res.message, 'error');
-                }
-            });
-    }
-
-    // ── Search / Filter ───────────────────────────────────────────────────────────
-    function filterUsers() {
-        const q = document.getElementById('searchUser')?.value.toLowerCase();
-        if (q) {
-            document.querySelectorAll('#userTableBody tr').forEach(row => {
-                row.style.display = row.dataset.username?.includes(q) ? '' : 'none';
-            });
-        }
-    }
-
-    // ── Toast ─────────────────────────────────────────────────────────────────────
-    function showToast(msg, type = 'success') {
-        const toast = document.getElementById('toast');
-        document.getElementById('toastMsg').textContent = msg;
-        toast.className = 'show ' + type;
-        setTimeout(() => toast.className = '', 3000);
-    }
-
-    // ── Reports ───────────────────────────────────────────────────────────────────
-    let reportRows = [];
-
-    function generateReport() {
-        const type = document.getElementById('reportType').value;
-        const start = document.getElementById('startDate').value;
-        const end = document.getElementById('endDate').value;
-
-        window.location.href = `?tab=reports&report=${type}&start=${start}&end=${end}`;
-    }
-
-    function exportCSV() {
-        const table = document.querySelector('#reportContent table');
-        if (!table) {
-            showToast('Generate a report first.', 'error');
-            return;
+        // Modal functions
+        function openModal() {
+            document.getElementById('modalTitle').innerHTML = '<i class="fas fa-user-plus"></i> Add User';
+            document.getElementById('editUserId').value = '';
+            document.getElementById('modalUsername').value = '';
+            document.getElementById('modalPassword').value = '';
+            document.getElementById('modalRole').value = 'user';
+            document.getElementById('passwordLabel').textContent = 'Password';
+            document.getElementById('modalPassword').required = true;
+            document.getElementById('userModal').classList.add('active');
         }
 
-        let csv = [];
-        // Get headers
-        const headers = [];
-        table.querySelectorAll('thead th').forEach(th => {
-            headers.push(th.innerText);
-        });
-        csv.push(headers.join(','));
+        function openEditModal(id, username, role) {
+            document.getElementById('modalTitle').innerHTML = '<i class="fas fa-edit"></i> Edit User';
+            document.getElementById('editUserId').value = id;
+            document.getElementById('modalUsername').value = username;
+            document.getElementById('modalPassword').value = '';
+            document.getElementById('modalRole').value = role;
+            document.getElementById('passwordLabel').textContent = 'Password (leave blank to keep)';
+            document.getElementById('modalPassword').required = false;
+            document.getElementById('userModal').classList.add('active');
+        }
 
-        // Get rows
-        table.querySelectorAll('tbody tr').forEach(tr => {
-            const row = [];
-            tr.querySelectorAll('td').forEach(td => {
-                row.push('"' + td.innerText.replace(/"/g, '""') + '"');
-            });
-            csv.push(row.join(','));
-        });
+        function closeModal() {
+            document.getElementById('userModal').classList.remove('active');
+        }
 
-        const blob = new Blob([csv.join('\n')], {
-            type: 'text/csv'
-        });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `report_${Date.now()}.csv`;
-        a.click();
-        URL.revokeObjectURL(url);
-        showToast('Report exported successfully!', 'success');
-    }
+        function saveUser(e) {
+            e.preventDefault();
+            const id = document.getElementById('editUserId').value;
+            const username = document.getElementById('modalUsername').value.trim();
+            const password = document.getElementById('modalPassword').value;
+            const role = document.getElementById('modalRole').value;
+            const action = id ? 'edit_user' : 'create_user';
+            const btn = document.getElementById('saveBtn');
 
-    // ── Charts ────────────────────────────────────────────────────────────────────
-    let chartsInitialized = false;
+            const body = new FormData();
+            body.append('action', action);
+            body.append('username', username);
+            body.append('password', password);
+            body.append('role', role);
+            if (id) body.append('user_id', id);
 
-    function initCharts() {
-        if (chartsInitialized) return;
-        chartsInitialized = true;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>';
 
-        // Balut per User bar chart
-        new Chart(document.getElementById('balutChart'), {
-            type: 'bar',
-            data: {
-                labels: PHP.balutPerUser.map(r => r.username),
-                datasets: [{
-                    label: 'Total Balut',
-                    data: PHP.balutPerUser.map(r => parseInt(r.total_balut)),
-                    backgroundColor: 'rgba(16,185,129,.7)',
-                    borderColor: '#10b981',
-                    borderWidth: 2,
-                    borderRadius: 8,
-                }]
-            },
-            options: {
-                responsive: true,
-                plugins: {
-                    legend: {
-                        display: false
+            fetch(window.location.href, {
+                    method: 'POST',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    body
+                })
+                .then(r => r.json())
+                .then(res => {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fas fa-save"></i> Save';
+                    if (res.success) {
+                        closeModal();
+                        showToast(res.message, 'success');
+                        setTimeout(() => location.reload(), 1000);
+                    } else {
+                        showToast(res.message, 'error');
                     }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        grid: {
-                            color: '#f1f5f9'
-                        }
+                });
+        }
+
+        function deleteUser(id, username) {
+            if (!confirm(`Delete "${username}"?`)) return;
+            const body = new FormData();
+            body.append('action', 'delete_user');
+            body.append('user_id', id);
+            fetch(window.location.href, {
+                    method: 'POST',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    body
+                })
+                .then(r => r.json())
+                .then(res => {
+                    if (res.success) {
+                        showToast(res.message, 'success');
+                        setTimeout(() => location.reload(), 1000);
+                    } else {
+                        showToast(res.message, 'error');
                     }
-                }
+                });
+        }
+
+        function showToast(msg, type = 'success') {
+            const toast = document.getElementById('toast');
+            document.getElementById('toastMsg').textContent = msg;
+            toast.className = 'show ' + type;
+            setTimeout(() => toast.className = '', 3000);
+        }
+
+        function generateReport() {
+            const type = document.getElementById('reportType').value;
+            const start = document.getElementById('startDate').value;
+            const end = document.getElementById('endDate').value;
+            window.location.href = `?tab=reports&report=${type}&start=${start}&end=${end}`;
+        }
+
+        function exportCSV() {
+            const table = document.querySelector('#reportContent table');
+            if (!table) {
+                showToast('Generate a report first.', 'error');
+                return;
             }
-        });
+            let csv = [];
+            const headers = [];
+            table.querySelectorAll('thead th').forEach(th => headers.push(th.innerText));
+            csv.push(headers.join(','));
+            table.querySelectorAll('tbody tr').forEach(tr => {
+                const row = [];
+                tr.querySelectorAll('td').forEach(td => row.push('"' + td.innerText.replace(/"/g, '""') + '"'));
+                csv.push(row.join(','));
+            });
+            const blob = new Blob([csv.join('\n')], {
+                type: 'text/csv'
+            });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `report_${Date.now()}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast('Report exported!', 'success');
+        }
 
-        // Weekly trend line chart
-        const labels = PHP.weeklyTrend.map(r => r.day);
-        new Chart(document.getElementById('trendChart'), {
-            type: 'line',
-            data: {
-                labels,
-                datasets: [{
-                        label: 'Balut',
-                        data: PHP.weeklyTrend.map(r => +r.balut),
+        // Charts
+        let chartsInitialized = false;
+
+        function initCharts() {
+            if (chartsInitialized) return;
+            chartsInitialized = true;
+
+            new Chart(document.getElementById('balutChart'), {
+                type: 'bar',
+                data: {
+                    labels: PHP.balutPerUser.map(r => r.username),
+                    datasets: [{
+                        label: 'Total Balut',
+                        data: PHP.balutPerUser.map(r => parseInt(r.total_balut)),
+                        backgroundColor: 'rgba(16,185,129,.7)',
                         borderColor: '#10b981',
-                        backgroundColor: 'rgba(16,185,129,.1)',
-                        fill: true,
-                        tension: .4
+                        borderWidth: 2,
+                        borderRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
                     },
-                    {
-                        label: 'Chicks',
-                        data: PHP.weeklyTrend.map(r => +r.chicks),
-                        borderColor: '#3b82f6',
-                        backgroundColor: 'rgba(59,130,246,.1)',
-                        fill: true,
-                        tension: .4
-                    },
-                    {
-                        label: 'Failed',
-                        data: PHP.weeklyTrend.map(r => +r.failed),
-                        borderColor: '#ef4444',
-                        backgroundColor: 'rgba(239,68,68,.1)',
-                        fill: true,
-                        tension: .4
-                    },
-                ]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        grid: {
-                            color: '#f1f5f9'
+                    scales: {
+                        y: {
+                            beginAtZero: true
                         }
                     }
                 }
-            }
-        });
+            });
 
-        // Pie chart
-        new Chart(document.getElementById('pieChart'), {
-            type: 'doughnut',
-            data: {
-                labels: ['Balut', 'Chicks', 'Failed'],
-                datasets: [{
-                    data: [PHP.totalBalut, PHP.totalChicks, PHP.totalFailed],
-                    backgroundColor: ['#10b981', '#3b82f6', '#ef4444'],
-                    borderWidth: 2,
-                }]
-            },
-            options: {
-                responsive: true,
-                plugins: {
-                    legend: {
-                        position: 'bottom'
+            const labels = PHP.weeklyTrend.map(r => r.day);
+            new Chart(document.getElementById('trendChart'), {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                            label: 'Balut',
+                            data: PHP.weeklyTrend.map(r => +r.balut),
+                            borderColor: '#10b981',
+                            fill: true,
+                            tension: .4
+                        },
+                        {
+                            label: 'Chicks',
+                            data: PHP.weeklyTrend.map(r => +r.chicks),
+                            borderColor: '#3b82f6',
+                            fill: true,
+                            tension: .4
+                        },
+                        {
+                            label: 'Failed',
+                            data: PHP.weeklyTrend.map(r => +r.failed),
+                            borderColor: '#ef4444',
+                            fill: true,
+                            tension: .4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
                     }
                 }
-            }
-        });
+            });
 
-        // Status doughnut
-        new Chart(document.getElementById('statusChart'), {
-            type: 'doughnut',
-            data: {
-                labels: ['Incubating', 'Complete'],
-                datasets: [{
-                    data: [PHP.incubating, PHP.complete],
-                    backgroundColor: ['#f59e0b', '#10b981'],
-                    borderWidth: 2,
-                }]
-            },
-            options: {
-                responsive: true,
-                plugins: {
-                    legend: {
-                        position: 'bottom'
+            new Chart(document.getElementById('pieChart'), {
+                type: 'doughnut',
+                data: {
+                    labels: ['Balut', 'Chicks', 'Failed'],
+                    datasets: [{
+                        data: [PHP.totalBalut, PHP.totalChicks, PHP.totalFailed],
+                        backgroundColor: ['#10b981', '#3b82f6', '#ef4444']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                font: {
+                                    size: 10
+                                }
+                            }
+                        }
                     }
                 }
-            }
-        });
-    }
+            });
 
-    // Initialize charts if analytics tab is active
-    if ('<?= $activeTab ?>' === 'analytics') {
-        initCharts();
-    }
-</script>
+            new Chart(document.getElementById('statusChart'), {
+                type: 'doughnut',
+                data: {
+                    labels: ['Incubating', 'Complete'],
+                    datasets: [{
+                        data: [PHP.incubating, PHP.complete],
+                        backgroundColor: ['#f59e0b', '#10b981']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                font: {
+                                    size: 10
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        if ('<?= $activeTab ?>' === 'analytics') initCharts();
+
+        // Close modal on outside click
+        window.onclick = function(event) {
+            const modal = document.getElementById('userModal');
+            if (event.target === modal) closeModal();
+        };
+    </script>
 </body>
 
 </html>
