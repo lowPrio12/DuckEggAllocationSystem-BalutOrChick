@@ -224,6 +224,7 @@ if ($reportType === 'userSummary') {
                COALESCE(COUNT(e.egg_id),0)      AS batches
         FROM users u LEFT JOIN egg e ON u.user_id=e.user_id
             AND e.date_started_incubation BETWEEN ? AND ?
+        WHERE u.user_role = 'user'
         GROUP BY u.user_id ORDER BY total_balut DESC
     ");
     $stmt->execute([$startDate, $endDate . ' 23:59:59']);
@@ -236,20 +237,6 @@ if ($reportType === 'userSummary') {
         FROM egg e JOIN users u ON e.user_id=u.user_id
         WHERE e.date_started_incubation BETWEEN ? AND ?
         ORDER BY e.batch_number DESC
-    ");
-    $stmt->execute([$startDate, $endDate . ' 23:59:59']);
-    $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} elseif ($reportType === 'profitDistribution') {
-    $stmt = $conn->prepare("
-        SELECT u.username,
-               COALESCE(SUM(e.balut_count),0) AS total_balut,
-               COALESCE(SUM(e.chick_count),0) AS total_chicks
-        FROM users u LEFT JOIN egg e ON u.user_id=e.user_id
-            AND e.date_started_incubation BETWEEN ? AND ?
-        WHERE u.user_role = 'user'
-        GROUP BY u.user_id
-        HAVING total_balut > 0
-        ORDER BY total_balut DESC
     ");
     $stmt->execute([$startDate, $endDate . ' 23:59:59']);
     $reportData = $stmt->fetchAll(PDO::FETCH_ASSOC);
