@@ -151,14 +151,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 }
 
-// Distribute profits
-$distribution_message = null;
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['distribute_profits'])) {
-    $stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action, log_date) VALUES (?, ?, NOW())");
-    $stmt->execute([$manager_id, "Distributed profits based on balut counts"]);
-    $distribution_message = "Profits distributed successfully!";
-}
-
 // Handle activity log export
 if (isset($_GET['export_activity']) && $_GET['export_activity'] === 'csv') {
     // Fetch all activity logs for export (no limit)
@@ -210,6 +202,7 @@ $stmt = $conn->prepare("
            COALESCE(COUNT(e.egg_id), 0)     AS batch_count
     FROM users u
     LEFT JOIN egg e ON u.user_id = e.user_id
+    WHERE u.user_role = 'user'
     GROUP BY u.user_id
     ORDER BY u.created_at DESC
 ");
@@ -1253,12 +1246,6 @@ $topUsers = $stmt->fetchAll(PDO::FETCH_ASSOC);
                     <i class="far fa-calendar-alt"></i> <?= date('M d, Y') ?>
                 </div>
             </div>
-
-            <?php if ($distribution_message): ?>
-                <div class="alert alert-success">
-                    <i class="fas fa-check-circle"></i> <?= htmlspecialchars($distribution_message) ?>
-                </div>
-            <?php endif; ?>
 
             <!-- ═══════════════ OVERVIEW TAB ═══════════════ -->
             <div id="overview-section" class="tab-section <?= $activeTab == 'overview' ? 'active' : '' ?>">
