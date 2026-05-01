@@ -38,263 +38,7 @@ function timeAgo($datetime)
 $stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action, log_date) VALUES (?, ?, NOW())");
 $stmt->execute([$user_id, ucfirst($user_role) . " accessed User Management"]);
 
-// Handle export requests
-if (isset($_GET['export'])) {
-    $export_type = $_GET['export'];
-    $export_user_id = isset($_GET['user_id']) ? (int)$_GET['user_id'] : 0;
-
-    // Check permission for export
-    $canExport = false;
-    if ($user_role === 'admin') {
-        $canExport = true;
-    } else {
-        $stmt = $conn->prepare("SELECT user_role FROM users WHERE user_id = ?");
-        $stmt->execute([$export_user_id]);
-        $targetUser = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($targetUser && ($targetUser['user_role'] === 'user' || $export_user_id == $user_id)) {
-            $canExport = true;
-        }
-    }
-
-    if ($canExport && $export_user_id > 0) {
-        // Get user data
-        $stmt = $conn->prepare("SELECT username, user_role, created_at FROM users WHERE user_id = ?");
-        $stmt->execute([$export_user_id]);
-        $userData = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($export_type === 'egg_records') {
-            // Export egg records
-            $stmt = $conn->prepare("
-                SELECT batch_number, total_egg, status, date_started_incubation, 
-                       balut_count, chick_count, failed_count,
-                       DATEDIFF(NOW(), date_started_incubation) as days_in_incubation
-                FROM egg 
-                WHERE user_id = ? 
-                ORDER BY date_started_incubation DESC
-            ");
-            $stmt->execute([$export_user_id]);
-            $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            // Set headers for CSV download
-            header('Content-Type: text/csv; charset=utf-8');
-            header('Content-Disposition: attachment; filename="' . $userData['username'] . '_egg_records_' . date('Y-m-d') . '.csv"');
-
-            $output = fopen('php://output', 'w');
-            // Add UTF-8 BOM
-            fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
-            fputcsv($output, ['Batch Number', 'Total Eggs', 'Balut Count', 'Chick Count', 'Failed Count', 'Status', 'Date Started', 'Days in Incubation']);
-
-            foreach ($records as $record) {
-                fputcsv($output, [
-                    $record['batch_number'],
-                    $record['total_egg'],
-                    $record['balut_count'],
-                    $record['chick_count'],
-                    $record['failed_count'],
-                    $record['status'],
-                    date('Y-m-d', strtotime($record['date_started_incubation'])),
-                    $record['days_in_incubation']
-                ]);
-            }
-            fclose($output);
-            exit;
-        } elseif ($export_type === 'activity_logs') {
-            // Export activity logs
-            $stmt = $conn->prepare("
-                SELECT action, log_date 
-                FROM user_activity_logs 
-                WHERE user_id = ? 
-                ORDER BY log_date DESC
-            ");
-            $stmt->execute([$export_user_id]);
-            $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            header('Content-Type: text/csv; charset=utf-8');
-            header('Content-Disposition: attachment; filename="' . $userData['username'] . '_activity_logs_' . date('Y-m-d') . '.csv"');
-
-            $output = fopen('php://output', 'w');
-            fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
-            fputcsv($output, ['Action', 'Date & Time']);
-
-            foreach ($records as $record) {
-                fputcsv($output, [
-                    $record['action'],
-                    formatDateTime($record['log_date'])
-                ]);
-            }
-            fclose($output);
-            exit;
-        }
-    }
-}
-
-// Handle AJAX requests for user management
-$isAjax = isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
-
-// CREATE USER
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create_user') {
-    $response = ['success' => false, 'message' => ''];
-
-    $username = trim($_POST['username'] ?? '');
-    $password = $_POST['password'] ?? '';
-    $role = trim($_POST['role'] ?? 'user');
-
-    // Role restrictions based on user role
-    if ($user_role !== 'admin') {
-        if ($role !== 'user') {
-            $response['message'] = 'You can only create regular user accounts.';
-            echo json_encode($response);
-            exit;
-        }
-    }
-
-    $errors = [];
-    if (strlen($username) < 3) $errors[] = 'Username must be at least 3 characters.';
-    if (strlen($password) < 6) $errors[] = 'Password must be at least 6 characters.';
-
-    $chk = $conn->prepare("SELECT user_id FROM users WHERE username = ?");
-    $chk->execute([$username]);
-    if ($chk->fetch()) $errors[] = 'Username already exists.';
-
-    if (empty($errors)) {
-        $hash = password_hash($password, PASSWORD_DEFAULT);
-        $ins = $conn->prepare("INSERT INTO users (username, password, user_role) VALUES (?, ?, ?)");
-        $ins->execute([$username, $hash, $role]);
-
-        $actionLog = "Created user: $username ($role)";
-        $stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action, log_date) VALUES (?, ?, NOW())");
-        $stmt->execute([$user_id, $actionLog]);
-
-        $response = ['success' => true, 'message' => 'User created successfully.'];
-    } else {
-        $response = ['success' => false, 'message' => implode(' ', $errors)];
-    }
-
-    if ($isAjax) {
-        echo json_encode($response);
-        exit;
-    }
-}
-
-// EDIT USER
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'edit_user') {
-    $response = ['success' => false, 'message' => ''];
-    $edit_id = (int)($_POST['user_id'] ?? 0);
-    $username = trim($_POST['username'] ?? '');
-    $role = trim($_POST['role'] ?? '');
-    $password = $_POST['password'] ?? '';
-
-    $stmt = $conn->prepare("SELECT user_role FROM users WHERE user_id = ?");
-    $stmt->execute([$edit_id]);
-    $targetUser = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$targetUser) {
-        $response['message'] = 'User not found.';
-        echo json_encode($response);
-        exit;
-    }
-
-    if ($user_role !== 'admin') {
-        if ($targetUser['user_role'] === 'admin') {
-            $response['message'] = 'You cannot edit admin accounts.';
-            echo json_encode($response);
-            exit;
-        }
-        if ($role !== 'user') {
-            $response['message'] = 'You can only assign regular user role.';
-            echo json_encode($response);
-            exit;
-        }
-        if ($targetUser['user_role'] === 'manager' && $edit_id != $user_id) {
-            $response['message'] = 'You cannot edit other manager accounts.';
-            echo json_encode($response);
-            exit;
-        }
-    }
-
-    if ($edit_id && strlen($username) >= 3) {
-        if (!empty($password) && strlen($password) >= 6) {
-            $hash = password_hash($password, PASSWORD_DEFAULT);
-            $upd = $conn->prepare("UPDATE users SET username=?, user_role=?, password=? WHERE user_id=?");
-            $upd->execute([$username, $role, $hash, $edit_id]);
-        } else {
-            $upd = $conn->prepare("UPDATE users SET username=?, user_role=? WHERE user_id=?");
-            $upd->execute([$username, $role, $edit_id]);
-        }
-
-        $actionLog = "Edited user: $username (ID: $edit_id)";
-        $stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action, log_date) VALUES (?, ?, NOW())");
-        $stmt->execute([$user_id, $actionLog]);
-
-        $response = ['success' => true, 'message' => 'User updated successfully.'];
-    } else {
-        $response = ['success' => false, 'message' => 'Invalid data. Username must be at least 3 characters.'];
-    }
-
-    if ($isAjax) {
-        echo json_encode($response);
-        exit;
-    }
-}
-
-// DELETE USER
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_user') {
-    $response = ['success' => false, 'message' => ''];
-    $del_id = (int)($_POST['user_id'] ?? 0);
-
-    $stmt = $conn->prepare("SELECT username, user_role FROM users WHERE user_id = ?");
-    $stmt->execute([$del_id]);
-    $targetUser = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$targetUser) {
-        $response['message'] = 'User not found.';
-        echo json_encode($response);
-        exit;
-    }
-
-    if ($user_role !== 'admin') {
-        if ($targetUser['user_role'] === 'admin') {
-            $response['message'] = 'You cannot delete admin accounts.';
-            echo json_encode($response);
-            exit;
-        }
-        if ($targetUser['user_role'] === 'manager' && $del_id != $user_id) {
-            $response['message'] = 'You cannot delete other manager accounts.';
-            echo json_encode($response);
-            exit;
-        }
-    }
-
-    if ($del_id == $user_id) {
-        $response['message'] = 'You cannot delete your own account.';
-        echo json_encode($response);
-        exit;
-    }
-
-    if ($del_id) {
-        $stmt = $conn->prepare("DELETE FROM user_activity_logs WHERE user_id = ?");
-        $stmt->execute([$del_id]);
-        $stmt = $conn->prepare("DELETE FROM egg WHERE user_id = ?");
-        $stmt->execute([$del_id]);
-        $del = $conn->prepare("DELETE FROM users WHERE user_id=?");
-        $del->execute([$del_id]);
-
-        $actionLog = "Deleted user: {$targetUser['username']} (ID: $del_id, Role: {$targetUser['user_role']})";
-        $stmt = $conn->prepare("INSERT INTO user_activity_logs (user_id, action, log_date) VALUES (?, ?, NOW())");
-        $stmt->execute([$user_id, $actionLog]);
-
-        $response = ['success' => true, 'message' => 'User deleted successfully.'];
-    } else {
-        $response = ['success' => false, 'message' => 'Invalid user ID.'];
-    }
-
-    if ($isAjax) {
-        echo json_encode($response);
-        exit;
-    }
-}
-
-// ── Fetch users based on role ─────────────────────────────────────────
+// Fetch users based on role
 if ($user_role === 'admin') {
     $stmt = $conn->prepare("
         SELECT u.user_id, u.username, u.user_role, u.created_at,
@@ -326,10 +70,11 @@ if ($user_role === 'admin') {
     $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-// ── Fetch user egg records for selected user ──────────────────────────
+// Fetch user egg records for selected user
 $selected_user_id = isset($_GET['view_user']) ? (int)$_GET['view_user'] : 0;
 $userEggRecords = [];
 $selectedUsername = '';
+$userActivities = [];
 $canView = false;
 
 if ($selected_user_id > 0) {
@@ -359,25 +104,21 @@ if ($selected_user_id > 0) {
         ");
         $stmt->execute([$selected_user_id]);
         $userEggRecords = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $stmt = $conn->prepare("
+            SELECT l.*, u.username
+            FROM user_activity_logs l
+            LEFT JOIN users u ON l.user_id = u.user_id
+            WHERE l.user_id = ?
+            ORDER BY l.log_date DESC
+            LIMIT 50
+        ");
+        $stmt->execute([$selected_user_id]);
+        $userActivities = $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 }
 
-// ── Fetch user activity logs ──────────────────────────────────────────
-$userActivities = [];
-if ($selected_user_id > 0 && $canView) {
-    $stmt = $conn->prepare("
-        SELECT l.*, u.username
-        FROM user_activity_logs l
-        LEFT JOIN users u ON l.user_id = u.user_id
-        WHERE l.user_id = ?
-        ORDER BY l.log_date DESC
-        LIMIT 50
-    ");
-    $stmt->execute([$selected_user_id]);
-    $userActivities = $stmt->fetchAll(PDO::FETCH_ASSOC);
-}
-
-// ── Statistics ────────────────────────────────────────────────────────
+// Statistics
 $totalUsers = $conn->query("SELECT COUNT(*) FROM users")->fetchColumn();
 $totalBatches = $conn->query("SELECT COUNT(*) FROM egg")->fetchColumn();
 $totalEggs = $conn->query("SELECT SUM(total_egg) FROM egg")->fetchColumn() ?: 0;
@@ -868,6 +609,7 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
             gap: 0.6rem;
             font-size: 0.75rem;
             transition: background 0.2s;
+            cursor: pointer;
         }
 
         .export-dropdown-content a:hover {
@@ -1241,425 +983,424 @@ $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'users';
                                                 <div class="avatar"><?= strtoupper(substr($u['username'], 0, 1)) ?></div>
                                                 <div><?= htmlspecialchars($u['username']) ?></div>
                                             </div>
+                                        </td>
+                                        <td><span class="role-badge <?= $u['user_role'] ?>"><?= ucfirst($u['user_role']) ?></span></td>
+                                        <td><?= date('M d, Y', strtotime($u['created_at'])) ?></td>
+                                        <td><?= number_format($u['batch_count']) ?></td>
+                                        <td><strong><?= number_format($u['total_balut']) ?></strong></td>
+                                        <td><?= number_format($u['total_chicks']) ?></td>
+                                        <td>
+                                            <div class="action-btns">
+                                                <a href="?view_user=<?= $u['user_id'] ?>" class="btn btn-outline btn-sm">
+                                                    <i class="fas fa-eye"></i> View
+                                                </a>
+                                                <?php if ($user_role === 'admin' || ($user_role === 'manager' && $u['user_role'] === 'user')): ?>
+                                                    <button class="btn btn-warning btn-sm" onclick="openEditModal(<?= $u['user_id'] ?>, '<?= addslashes($u['username']) ?>', '<?= $u['user_role'] ?>')">
+                                                        <i class="fas fa-edit"></i> Edit
+                                                    </button>
+                                                <?php endif; ?>
+                                                <?php if ($user_role === 'admin' && $u['user_id'] != $user_id): ?>
+                                                    <button class="btn btn-danger btn-sm" onclick="deleteUser(<?= $u['user_id'] ?>, '<?= addslashes($u['username']) ?>')">
+                                                        <i class="fas fa-trash"></i> Delete
+                                                    </button>
+                                                <?php endif; ?>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
                     </div>
-                    <td><span class="role-badge <?= $u['user_role'] ?>"><?= ucfirst($u['user_role']) ?></span>
-                    <td><?= date('M d, Y', strtotime($u['created_at'])) ?>
-                    <td><?= number_format($u['batch_count']) ?>
-                    <td><strong><?= number_format($u['total_balut']) ?></strong>
-                    <td><?= number_format($u['total_chicks']) ?>
-                    <td>
-                        <div class="action-btns">
-                            <a href="?view_user=<?= $u['user_id'] ?>" class="btn btn-outline btn-sm">
-                                <i class="fas fa-eye"></i> View
-                            </a>
-                            <?php if ($user_role === 'admin' || ($user_role === 'manager' && $u['user_role'] === 'user')): ?>
-                                <button class="btn btn-warning btn-sm" onclick="openEditModal(<?= $u['user_id'] ?>, '<?= addslashes($u['username']) ?>', '<?= $u['user_role'] ?>')">
-                                    <i class="fas fa-edit"></i> Edit
-                                </button>
-                            <?php endif; ?>
-                            <?php if ($user_role === 'admin' && $u['user_id'] != $user_id): ?>
-                                <button class="btn btn-danger btn-sm" onclick="deleteUser(<?= $u['user_id'] ?>, '<?= addslashes($u['username']) ?>')">
-                                    <i class="fas fa-trash"></i> Delete
-                                </button>
-                            <?php endif; ?>
+                </div>
+            <?php endif; ?>
+
+            <!-- User Details View -->
+            <?php if ($selected_user_id > 0 && $canView): ?>
+                <div class="back-button">
+                    <a href="user-management.php" class="btn btn-outline">
+                        <i class="fas fa-arrow-left"></i> Back to Users
+                    </a>
+                </div>
+
+                <!-- User Records Header -->
+                <div class="table-container" style="margin-bottom: 0.75rem;">
+                    <div class="table-header">
+                        <h3><i class="fas fa-user-circle"></i> User Records: <?= htmlspecialchars($selectedUsername) ?></h3>
+                        <div class="export-dropdown">
+                            <button class="btn btn-primary">
+                                <i class="fas fa-download"></i> Export <i class="fas fa-chevron-down"></i>
+                            </button>
+                            <div class="export-dropdown-content">
+                                <a href="#" onclick="exportEggRecordsCSV(<?= $selected_user_id ?>)">
+                                    <i class="fas fa-file-csv"></i> Egg Records (CSV)
+                                </a>
+                                <a href="#" onclick="exportActivityLogsCSV(<?= $selected_user_id ?>)">
+                                    <i class="fas fa-file-csv"></i> Activity Logs (CSV)
+                                </a>
+                                <a href="#" onclick="exportEggRecordsPDF(<?= $selected_user_id ?>)">
+                                    <i class="fas fa-file-pdf"></i> Egg Records (PDF)
+                                </a>
+                                <a href="#" onclick="exportActivityLogsPDF(<?= $selected_user_id ?>)">
+                                    <i class="fas fa-file-pdf"></i> Activity Logs (PDF)
+                                </a>
+                            </div>
                         </div>
+                    </div>
                 </div>
-                </tr>
-            <?php endforeach; ?>
-            </tbody>
-            </table>
-    </div>
-    </div>
-<?php endif; ?>
 
-<!-- User Details View -->
-<?php if ($selected_user_id > 0 && $canView): ?>
-    <div class="back-button">
-        <a href="user-management.php" class="btn btn-outline">
-            <i class="fas fa-arrow-left"></i> Back to Users
-        </a>
-    </div>
-
-    <!-- User Records Header -->
-    <div class="table-container" style="margin-bottom: 0.75rem;">
-        <div class="table-header">
-            <h3><i class="fas fa-user-circle"></i> User Records: <?= htmlspecialchars($selectedUsername) ?></h3>
-            <div class="export-dropdown">
-                <button class="btn btn-primary">
-                    <i class="fas fa-download"></i> Export <i class="fas fa-chevron-down"></i>
-                </button>
-                <div class="export-dropdown-content">
-                    <a href="#" onclick="exportEggRecordsCSV(<?= $selected_user_id ?>)">
-                        <i class="fas fa-file-csv"></i> Egg Records (CSV)
-                    </a>
-                    <a href="#" onclick="exportActivityLogsCSV(<?= $selected_user_id ?>)">
-                        <i class="fas fa-file-csv"></i> Activity Logs (CSV)
-                    </a>
-                    <a href="#" onclick="exportEggRecordsPDF(<?= $selected_user_id ?>)">
-                        <i class="fas fa-file-pdf"></i> Egg Records (PDF)
-                    </a>
-                    <a href="#" onclick="exportActivityLogsPDF(<?= $selected_user_id ?>)">
-                        <i class="fas fa-file-pdf"></i> Activity Logs (PDF)
-                    </a>
+                <!-- Egg Records Section -->
+                <div class="table-container" id="eggRecordsSection">
+                    <div class="table-header">
+                        <h3><i class="fas fa-egg"></i> Egg Batches</h3>
+                    </div>
+                    <div class="table-scroll-wrapper">
+                        <table class="data-table" id="eggRecordsTable">
+                            <thead>
+                                <tr>
+                                    <th>Batch #</th>
+                                    <th>Total Eggs</th>
+                                    <th>Balut</th>
+                                    <th>Chicks</th>
+                                    <th>Failed</th>
+                                    <th>Status</th>
+                                    <th>Started</th>
+                                    <th>Days</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (empty($userEggRecords)): ?>
+                                    <tr>
+                                        <td colspan="8" style="text-align: center; color: #64748b; padding: 1.5rem;">
+                                            <i class="fas fa-info-circle"></i> No egg batches found for this user
+                                        </td>
+                                    </tr>
+                                <?php else: ?>
+                                    <?php foreach ($userEggRecords as $batch): ?>
+                                        <tr>
+                                            <td><strong>#<?= htmlspecialchars($batch['batch_number'] ?? $batch['egg_id']) ?></strong></td>
+                                            <td><?= number_format($batch['total_egg']) ?></td>
+                                            <td><?= number_format($batch['balut_count']) ?></td>
+                                            <td><?= number_format($batch['chick_count']) ?></td>
+                                            <td><?= number_format($batch['failed_count']) ?></td>
+                                            <td>
+                                                <span class="badge <?= $batch['status'] == 'incubating' ? 'badge-warning' : 'badge-success' ?>">
+                                                    <?= ucfirst($batch['status']) ?>
+                                                </span>
+                                            </td>
+                                            <td><?= date('M d, Y', strtotime($batch['date_started_incubation'])) ?></td>
+                                            <td><?= $batch['days_in_incubation'] ?? 0 ?> days</td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
+
+                <!-- Activity Logs Section -->
+                <div class="table-container" id="activityLogsSection">
+                    <div class="table-header">
+                        <h3><i class="fas fa-history"></i> Activity History</h3>
+                    </div>
+                    <div class="table-scroll-wrapper">
+                        <table class="data-table" id="activityLogsTable">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (empty($userActivities)): ?>
+                                    <tr>
+                                        <td colspan="2" style="text-align: center; color: #64748b; padding: 1.5rem;">
+                                            <i class="fas fa-info-circle"></i> No activity logs found for this user
+                                        </td>
+                                    </tr>
+                                <?php else: ?>
+                                    <?php foreach ($userActivities as $activity): ?>
+                                        <tr>
+                                            <td class="activity-time"><?= timeAgo($activity['log_date']) ?><br><small><?= formatDateTime($activity['log_date']) ?></small></td>
+                                            <td><?= htmlspecialchars($activity['action']) ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            <?php endif; ?>
+        </main>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Generating PDF...</div>
+    </div>
+
+    <!-- Modal -->
+    <div id="userModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle"><i class="fas fa-user-plus"></i> Add New User</h3>
+                <button class="close" onclick="closeModal()">&times;</button>
             </div>
-        </div>
-    </div>
-
-    <!-- Egg Records Section -->
-    <div class="table-container" id="eggRecordsSection">
-        <div class="table-header">
-            <h3><i class="fas fa-egg"></i> Egg Batches</h3>
-        </div>
-        <div class="table-scroll-wrapper">
-            <table class="data-table" id="eggRecordsTable">
-                <thead>
-                    <tr>
-                        <th>Batch #</th>
-                        <th>Total Eggs</th>
-                        <th>Balut</th>
-                        <th>Chicks</th>
-                        <th>Failed</th>
-                        <th>Status</th>
-                        <th>Started</th>
-                        <th>Days</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php if (empty($userEggRecords)): ?>
-                        <tr>
-                            <td colspan="8" style="text-align: center; color: #64748b; padding: 1.5rem;">
-                                <i class="fas fa-info-circle"></i> No egg batches found for this user
-                            </td>
-                        </tr>
-                    <?php else: ?>
-                        <?php foreach ($userEggRecords as $batch): ?>
-                            <tr>
-                                <td><strong>#<?= htmlspecialchars($batch['batch_number'] ?? $batch['egg_id']) ?></strong></td>
-                                <td><?= number_format($batch['total_egg']) ?></td>
-                                <td><?= number_format($batch['balut_count']) ?></td>
-                                <td><?= number_format($batch['chick_count']) ?></td>
-                                <td><?= number_format($batch['failed_count']) ?></td>
-                                <td>
-                                    <span class="badge <?= $batch['status'] == 'incubating' ? 'badge-warning' : 'badge-success' ?>">
-                                        <?= ucfirst($batch['status']) ?>
-                                    </span>
-                                </td>
-                                <td><?= date('M d, Y', strtotime($batch['date_started_incubation'])) ?></td>
-                                <td><?= $batch['days_in_incubation'] ?? 0 ?> days</td>
-                            </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <!-- Activity Logs Section -->
-    <div class="table-container" id="activityLogsSection">
-        <div class="table-header">
-            <h3><i class="fas fa-history"></i> Activity History</h3>
-        </div>
-        <div class="table-scroll-wrapper">
-            <table class="data-table" id="activityLogsTable">
-                <thead>
-                    <tr>
-                        <th>Time</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php if (empty($userActivities)): ?>
-                        <tr>
-                            <td colspan="2" style="text-align: center; color: #64748b; padding: 1.5rem;">
-                                <i class="fas fa-info-circle"></i> No activity logs found for this user
-                            </td>
-                        </tr>
-                    <?php else: ?>
-                        <?php foreach ($userActivities as $activity): ?>
-                            <tr>
-                                <td class="activity-time"><?= timeAgo($activity['log_date']) ?><br><small><?= formatDateTime($activity['log_date']) ?></small></td>
-                                <td><?= htmlspecialchars($activity['action']) ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
-        </div>
-    </div>
-<?php endif; ?>
-</main>
-</div>
-
-<!-- Loading Overlay -->
-<div id="loadingOverlay" class="loading-overlay">
-    <div class="loading-spinner"></div>
-    <div class="loading-text">Generating PDF...</div>
-</div>
-
-<!-- Modal -->
-<div id="userModal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3 id="modalTitle"><i class="fas fa-user-plus"></i> Add New User</h3>
-            <button class="close" onclick="closeModal()">&times;</button>
-        </div>
-        <form id="userForm" onsubmit="saveUser(event)">
-            <input type="hidden" id="editUserId" value="">
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>Username</label>
-                    <input type="text" id="modalUsername" name="username" required minlength="3" maxlength="50">
+            <form id="userForm" onsubmit="saveUser(event)">
+                <input type="hidden" id="editUserId" value="">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Username</label>
+                        <input type="text" id="modalUsername" name="username" required minlength="3" maxlength="50">
+                    </div>
+                    <div class="form-group">
+                        <label id="passwordLabel">Password</label>
+                        <input type="password" id="modalPassword" name="password">
+                    </div>
+                    <div class="form-group">
+                        <label>Role</label>
+                        <select id="modalRole" name="role">
+                            <?php if ($user_role === 'admin'): ?>
+                                <option value="admin">Admin</option>
+                                <option value="manager">Manager</option>
+                                <option value="user">Regular User</option>
+                            <?php else: ?>
+                                <option value="user">Regular User</option>
+                            <?php endif; ?>
+                        </select>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label id="passwordLabel">Password</label>
-                    <input type="password" id="modalPassword" name="password">
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="saveBtn">
+                        <i class="fas fa-save"></i> Save
+                    </button>
                 </div>
-                <div class="form-group">
-                    <label>Role</label>
-                    <select id="modalRole" name="role">
-                        <?php if ($user_role === 'admin'): ?>
-                            <option value="admin">Admin</option>
-                            <option value="manager">Manager</option>
-                            <option value="user">Regular User</option>
-                        <?php else: ?>
-                            <option value="user">Regular User</option>
-                        <?php endif; ?>
-                    </select>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button type="submit" class="btn btn-primary" id="saveBtn">
-                    <i class="fas fa-save"></i> Save
-                </button>
-            </div>
-        </form>
+            </form>
+        </div>
     </div>
-</div>
 
-<!-- Toast -->
-<div id="toast" class="toast">
-    <i class="fas fa-check-circle"></i>
-    <span id="toastMsg"></span>
-</div>
+    <!-- Toast -->
+    <div id="toast" class="toast">
+        <i class="fas fa-check-circle"></i>
+        <span id="toastMsg"></span>
+    </div>
 
-<script>
-    const userRole = '<?= $user_role ?>';
-    const currentUserId = <?= (int)$user_id ?>;
+    <script>
+        const userRole = '<?= $user_role ?>';
+        const currentUserId = <?= (int)$user_id ?>;
 
-    // Mobile menu functions
-    function toggleMobileMenu() {
-        document.getElementById('sidebar').classList.toggle('open');
-        const overlay = document.getElementById('sidebarOverlay');
-        if (overlay) {
-            overlay.style.display = document.getElementById('sidebar').classList.contains('open') ? 'block' : 'none';
+        // Mobile menu functions
+        function toggleMobileMenu() {
+            document.getElementById('sidebar').classList.toggle('open');
+            const overlay = document.getElementById('sidebarOverlay');
+            if (overlay) {
+                overlay.style.display = document.getElementById('sidebar').classList.contains('open') ? 'block' : 'none';
+            }
         }
-    }
 
-    function closeMobileMenu() {
-        document.getElementById('sidebar').classList.remove('open');
-        const overlay = document.getElementById('sidebarOverlay');
-        if (overlay) overlay.style.display = 'none';
-    }
+        function closeMobileMenu() {
+            document.getElementById('sidebar').classList.remove('open');
+            const overlay = document.getElementById('sidebarOverlay');
+            if (overlay) overlay.style.display = 'none';
+        }
 
-    document.getElementById('mobileMenuBtn').addEventListener('click', toggleMobileMenu);
+        document.getElementById('mobileMenuBtn').addEventListener('click', toggleMobileMenu);
 
-    // Search/Filter function
-    function filterUsers() {
-        const searchTerm = document.getElementById('searchInput').value.toLowerCase();
-        const rows = document.querySelectorAll('#userTableBody tr');
-        rows.forEach(row => {
-            const username = row.getAttribute('data-username') || '';
-            row.style.display = username.includes(searchTerm) ? '' : 'none';
-        });
-    }
-
-    // Modal functions
-    function openAddModal() {
-        document.getElementById('modalTitle').innerHTML = '<i class="fas fa-user-plus"></i> Add New User';
-        document.getElementById('editUserId').value = '';
-        document.getElementById('modalUsername').value = '';
-        document.getElementById('modalPassword').value = '';
-        document.getElementById('modalPassword').required = true;
-        document.getElementById('passwordLabel').textContent = 'Password';
-        document.getElementById('userModal').classList.add('active');
-    }
-
-    function openEditModal(id, username, role) {
-        document.getElementById('modalTitle').innerHTML = '<i class="fas fa-edit"></i> Edit User';
-        document.getElementById('editUserId').value = id;
-        document.getElementById('modalUsername').value = username;
-        document.getElementById('modalPassword').value = '';
-        document.getElementById('modalPassword').required = false;
-        document.getElementById('passwordLabel').textContent = 'Password (leave blank to keep unchanged)';
-        document.getElementById('modalRole').value = role;
-        document.getElementById('userModal').classList.add('active');
-    }
-
-    function closeModal() {
-        document.getElementById('userModal').classList.remove('active');
-    }
-
-    // Save user
-    async function saveUser(event) {
-        event.preventDefault();
-        const id = document.getElementById('editUserId').value;
-        const username = document.getElementById('modalUsername').value.trim();
-        const password = document.getElementById('modalPassword').value;
-        const role = document.getElementById('modalRole').value;
-        const action = id ? 'edit_user' : 'create_user';
-        const saveBtn = document.getElementById('saveBtn');
-
-        saveBtn.disabled = true;
-        saveBtn.innerHTML = '<span class="spinner" style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.6s linear infinite;display:inline-block;"></span> Saving...';
-
-        const formData = new FormData();
-        formData.append('action', action);
-        formData.append('username', username);
-        formData.append('password', password);
-        formData.append('role', role);
-        if (id) formData.append('user_id', id);
-
-        try {
-            const response = await fetch(window.location.href, {
-                method: 'POST',
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest'
-                },
-                body: formData
+        // Search/Filter function
+        function filterUsers() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            const rows = document.querySelectorAll('#userTableBody tr');
+            rows.forEach(row => {
+                const username = row.getAttribute('data-username') || '';
+                row.style.display = username.includes(searchTerm) ? '' : 'none';
             });
-            const result = await response.json();
-            if (result.success) {
-                showToast(result.message, 'success');
-                setTimeout(() => location.reload(), 1200);
-            } else {
-                showToast(result.message, 'error');
+        }
+
+        // Modal functions
+        function openAddModal() {
+            document.getElementById('modalTitle').innerHTML = '<i class="fas fa-user-plus"></i> Add New User';
+            document.getElementById('editUserId').value = '';
+            document.getElementById('modalUsername').value = '';
+            document.getElementById('modalPassword').value = '';
+            document.getElementById('modalPassword').required = true;
+            document.getElementById('passwordLabel').textContent = 'Password';
+            document.getElementById('userModal').classList.add('active');
+        }
+
+        function openEditModal(id, username, role) {
+            document.getElementById('modalTitle').innerHTML = '<i class="fas fa-edit"></i> Edit User';
+            document.getElementById('editUserId').value = id;
+            document.getElementById('modalUsername').value = username;
+            document.getElementById('modalPassword').value = '';
+            document.getElementById('modalPassword').required = false;
+            document.getElementById('passwordLabel').textContent = 'Password (leave blank to keep unchanged)';
+            document.getElementById('modalRole').value = role;
+            document.getElementById('userModal').classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('userModal').classList.remove('active');
+        }
+
+        // Save user - now using controller endpoints
+        async function saveUser(event) {
+            event.preventDefault();
+            const id = document.getElementById('editUserId').value;
+            const username = document.getElementById('modalUsername').value.trim();
+            const password = document.getElementById('modalPassword').value;
+            const role = document.getElementById('modalRole').value;
+            const isEdit = id ? true : false;
+            const endpoint = isEdit ? '../../controller/user-update.php' : '../../controller/user-create.php';
+            const saveBtn = document.getElementById('saveBtn');
+
+            saveBtn.disabled = true;
+            saveBtn.innerHTML = '<span class="spinner" style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 0.6s linear infinite;display:inline-block;"></span> Saving...';
+
+            const formData = new FormData();
+            formData.append('username', username);
+            formData.append('password', password);
+            formData.append('role', role);
+            if (id) formData.append('user_id', id);
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    body: formData
+                });
+                const result = await response.json();
+                if (result.success) {
+                    showToast(result.message, 'success');
+                    setTimeout(() => location.reload(), 1200);
+                } else {
+                    showToast(result.message, 'error');
+                    saveBtn.disabled = false;
+                    saveBtn.innerHTML = '<i class="fas fa-save"></i> Save';
+                }
+            } catch (error) {
+                showToast('An error occurred. Please try again.', 'error');
                 saveBtn.disabled = false;
                 saveBtn.innerHTML = '<i class="fas fa-save"></i> Save';
             }
-        } catch (error) {
-            showToast('An error occurred. Please try again.', 'error');
-            saveBtn.disabled = false;
-            saveBtn.innerHTML = '<i class="fas fa-save"></i> Save';
         }
-    }
 
-    // Delete user
-    async function deleteUser(id, username) {
-        if (!confirm(`Are you sure you want to delete user "${username}"? This action cannot be undone.`)) return;
-        const formData = new FormData();
-        formData.append('action', 'delete_user');
-        formData.append('user_id', id);
-        try {
-            const response = await fetch(window.location.href, {
-                method: 'POST',
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest'
-                },
-                body: formData
-            });
-            const result = await response.json();
-            if (result.success) {
-                showToast(result.message, 'success');
-                setTimeout(() => location.reload(), 1000);
-            } else {
-                showToast(result.message, 'error');
+        // Delete user - using controller endpoint
+        async function deleteUser(id, username) {
+            if (!confirm(`Are you sure you want to delete user "${username}"? This action cannot be undone.`)) return;
+            const formData = new FormData();
+            formData.append('user_id', id);
+            try {
+                const response = await fetch('../../controller/user-delete.php', {
+                    method: 'POST',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    body: formData
+                });
+                const result = await response.json();
+                if (result.success) {
+                    showToast(result.message, 'success');
+                    setTimeout(() => location.reload(), 1000);
+                } else {
+                    showToast(result.message, 'error');
+                }
+            } catch (error) {
+                showToast('An error occurred. Please try again.', 'error');
             }
-        } catch (error) {
-            showToast('An error occurred. Please try again.', 'error');
         }
-    }
 
-    function showToast(message, type = 'success') {
-        const toast = document.getElementById('toast');
-        const toastMsg = document.getElementById('toastMsg');
-        toastMsg.textContent = message;
-        toast.className = `toast show ${type}`;
-        setTimeout(() => toast.classList.remove('show'), 3000);
-    }
-
-    // Export functions
-    function exportEggRecordsCSV(userId) {
-        window.location.href = `?export=egg_records&user_id=${userId}`;
-        showToast('Exporting egg records...', 'info');
-    }
-
-    function exportActivityLogsCSV(userId) {
-        window.location.href = `?export=activity_logs&user_id=${userId}`;
-        showToast('Exporting activity logs...', 'info');
-    }
-
-    async function exportEggRecordsPDF(userId) {
-        const loadingOverlay = document.getElementById('loadingOverlay');
-        loadingOverlay.classList.add('active');
-        try {
-            const element = document.getElementById('eggRecordsSection');
-            const username = document.querySelector('.table-container h3').innerText.replace('User Records: ', '');
-            const clone = element.cloneNode(true);
-            clone.style.width = '800px';
-            clone.style.padding = '20px';
-            clone.style.backgroundColor = 'white';
-            const titleDiv = document.createElement('div');
-            titleDiv.innerHTML = `<div style="text-align:center;margin-bottom:20px;padding-bottom:10px;border-bottom:2px solid #10b981;"><h1 style="color:#1e293b;">EggFlow - Egg Records</h1><p>User: ${username} | Generated: ${new Date().toLocaleString()}</p></div>`;
-            clone.insertBefore(titleDiv, clone.firstChild);
-            document.body.appendChild(clone);
-            const canvas = await html2canvas(clone, {
-                scale: 2,
-                backgroundColor: '#ffffff'
-            });
-            document.body.removeChild(clone);
-            const {
-                jsPDF
-            } = window.jspdf;
-            const pdf = new jsPDF('p', 'mm', 'a4');
-            const imgWidth = 210;
-            const imgHeight = (canvas.height * imgWidth) / canvas.width;
-            pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, imgWidth, imgHeight);
-            pdf.save(`egg_records_${username}_${new Date().toISOString().split('T')[0]}.pdf`);
-            showToast('PDF exported successfully!', 'success');
-        } catch (error) {
-            showToast('Error generating PDF.', 'error');
-        } finally {
-            loadingOverlay.classList.remove('active');
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            const toastMsg = document.getElementById('toastMsg');
+            toastMsg.textContent = message;
+            toast.className = `toast show ${type}`;
+            setTimeout(() => toast.classList.remove('show'), 3000);
         }
-    }
 
-    async function exportActivityLogsPDF(userId) {
-        const loadingOverlay = document.getElementById('loadingOverlay');
-        loadingOverlay.classList.add('active');
-        try {
-            const element = document.getElementById('activityLogsSection');
-            const username = document.querySelector('.table-container h3').innerText.replace('User Records: ', '');
-            const clone = element.cloneNode(true);
-            clone.style.width = '800px';
-            clone.style.padding = '20px';
-            clone.style.backgroundColor = 'white';
-            const titleDiv = document.createElement('div');
-            titleDiv.innerHTML = `<div style="text-align:center;margin-bottom:20px;padding-bottom:10px;border-bottom:2px solid #10b981;"><h1 style="color:#1e293b;">EggFlow - Activity Logs</h1><p>User: ${username} | Generated: ${new Date().toLocaleString()}</p></div>`;
-            clone.insertBefore(titleDiv, clone.firstChild);
-            document.body.appendChild(clone);
-            const canvas = await html2canvas(clone, {
-                scale: 2,
-                backgroundColor: '#ffffff'
-            });
-            document.body.removeChild(clone);
-            const {
-                jsPDF
-            } = window.jspdf;
-            const pdf = new jsPDF('p', 'mm', 'a4');
-            const imgWidth = 210;
-            const imgHeight = (canvas.height * imgWidth) / canvas.width;
-            pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, imgWidth, imgHeight);
-            pdf.save(`activity_logs_${username}_${new Date().toISOString().split('T')[0]}.pdf`);
-            showToast('PDF exported successfully!', 'success');
-        } catch (error) {
-            showToast('Error generating PDF.', 'error');
-        } finally {
-            loadingOverlay.classList.remove('active');
+        // Export functions - using export controller
+        function exportEggRecordsCSV(userId) {
+            window.location.href = `../../controller/user-export.php?export=egg_records&user_id=${userId}`;
+            showToast('Exporting egg records...', 'info');
         }
-    }
-</script>
+
+        function exportActivityLogsCSV(userId) {
+            window.location.href = `../../controller/user-export.php?export=activity_logs&user_id=${userId}`;
+            showToast('Exporting activity logs...', 'info');
+        }
+
+        async function exportEggRecordsPDF(userId) {
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            loadingOverlay.classList.add('active');
+            try {
+                const element = document.getElementById('eggRecordsSection');
+                const username = document.querySelector('.table-container h3').innerText.replace('User Records: ', '');
+                const clone = element.cloneNode(true);
+                clone.style.width = '800px';
+                clone.style.padding = '20px';
+                clone.style.backgroundColor = 'white';
+                const titleDiv = document.createElement('div');
+                titleDiv.innerHTML = `<div style="text-align:center;margin-bottom:20px;padding-bottom:10px;border-bottom:2px solid #10b981;"><h1 style="color:#1e293b;">EggFlow - Egg Records</h1><p>User: ${username} | Generated: ${new Date().toLocaleString()}</p></div>`;
+                clone.insertBefore(titleDiv, clone.firstChild);
+                document.body.appendChild(clone);
+                const canvas = await html2canvas(clone, {
+                    scale: 2,
+                    backgroundColor: '#ffffff'
+                });
+                document.body.removeChild(clone);
+                const {
+                    jsPDF
+                } = window.jspdf;
+                const pdf = new jsPDF('p', 'mm', 'a4');
+                const imgWidth = 210;
+                const imgHeight = (canvas.height * imgWidth) / canvas.width;
+                pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, imgWidth, imgHeight);
+                pdf.save(`egg_records_${username}_${new Date().toISOString().split('T')[0]}.pdf`);
+                showToast('PDF exported successfully!', 'success');
+            } catch (error) {
+                showToast('Error generating PDF.', 'error');
+            } finally {
+                loadingOverlay.classList.remove('active');
+            }
+        }
+
+        async function exportActivityLogsPDF(userId) {
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            loadingOverlay.classList.add('active');
+            try {
+                const element = document.getElementById('activityLogsSection');
+                const username = document.querySelector('.table-container h3').innerText.replace('User Records: ', '');
+                const clone = element.cloneNode(true);
+                clone.style.width = '800px';
+                clone.style.padding = '20px';
+                clone.style.backgroundColor = 'white';
+                const titleDiv = document.createElement('div');
+                titleDiv.innerHTML = `<div style="text-align:center;margin-bottom:20px;padding-bottom:10px;border-bottom:2px solid #10b981;"><h1 style="color:#1e293b;">EggFlow - Activity Logs</h1><p>User: ${username} | Generated: ${new Date().toLocaleString()}</p></div>`;
+                clone.insertBefore(titleDiv, clone.firstChild);
+                document.body.appendChild(clone);
+                const canvas = await html2canvas(clone, {
+                    scale: 2,
+                    backgroundColor: '#ffffff'
+                });
+                document.body.removeChild(clone);
+                const {
+                    jsPDF
+                } = window.jspdf;
+                const pdf = new jsPDF('p', 'mm', 'a4');
+                const imgWidth = 210;
+                const imgHeight = (canvas.height * imgWidth) / canvas.width;
+                pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, imgWidth, imgHeight);
+                pdf.save(`activity_logs_${username}_${new Date().toISOString().split('T')[0]}.pdf`);
+                showToast('PDF exported successfully!', 'success');
+            } catch (error) {
+                showToast('Error generating PDF.', 'error');
+            } finally {
+                loadingOverlay.classList.remove('active');
+            }
+        }
+    </script>
 </body>
 
 </html>

@@ -1,131 +1,108 @@
 <?php
+require_once '../model/config.php';
 
-// Fetch users
-$stmt = $conn->query("
-SELECT user_id, username, user_role, created_at
-FROM users
-ORDER BY created_at DESC
-");
+// Check if user is logged in
+if (!isset($_SESSION['user_id'])) {
+    http_response_code(401);
+    echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+    exit;
+}
 
-$users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// Only accept GET requests
+if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+    http_response_code(405);
+    echo json_encode(['success' => false, 'message' => 'Method not allowed']);
+    exit;
+}
 
+$user_role = $_SESSION['user_id'];
+$user_id = $_SESSION['user_id'];
+$selected_user_id = isset($_GET['user_id']) ? (int)$_GET['user_id'] : 0;
 
-// Handle Delete User
-if (isset($_POST['delete_user'])) {
+$response = ['success' => false, 'data' => []];
 
-    $user_id = $_POST['user_id'];
+// Fetch users based on role
+if ($user_role === 'admin') {
+    $stmt = $conn->prepare("
+        SELECT u.user_id, u.username, u.user_role, u.created_at,
+               COALESCE(SUM(e.balut_count), 0) AS total_balut,
+               COALESCE(SUM(e.chick_count), 0) AS total_chicks,
+               COALESCE(SUM(e.failed_count), 0) AS total_failed,
+               COALESCE(COUNT(e.egg_id), 0) AS batch_count
+        FROM users u
+        LEFT JOIN egg e ON u.user_id = e.user_id
+        GROUP BY u.user_id
+        ORDER BY u.created_at DESC
+    ");
+    $stmt->execute();
+    $response['data']['users'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} else {
+    $stmt = $conn->prepare("
+        SELECT u.user_id, u.username, u.user_role, u.created_at,
+               COALESCE(SUM(e.balut_count), 0) AS total_balut,
+               COALESCE(SUM(e.chick_count), 0) AS total_chicks,
+               COALESCE(SUM(e.failed_count), 0) AS total_failed,
+               COALESCE(COUNT(e.egg_id), 0) AS batch_count
+        FROM users u
+        LEFT JOIN egg e ON u.user_id = e.user_id
+        WHERE u.user_role = 'user' OR u.user_id = ?
+        GROUP BY u.user_id
+        ORDER BY u.created_at DESC
+    ");
+    $stmt->execute([$user_id]);
+    $response['data']['users'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
 
-    // Prevent admin from deleting themselves
-    if ($user_id == $_SESSION['user_id']) {
+// Fetch statistics
+$response['data']['totalUsers'] = $conn->query("SELECT COUNT(*) FROM users")->fetchColumn();
+$response['data']['totalBatches'] = $conn->query("SELECT COUNT(*) FROM egg")->fetchColumn();
+$response['data']['totalEggs'] = $conn->query("SELECT SUM(total_egg) FROM egg")->fetchColumn() ?: 0;
+$response['data']['totalChicks'] = $conn->query("SELECT SUM(chick_count) FROM egg")->fetchColumn() ?: 0;
+$response['data']['totalBalut'] = $conn->query("SELECT SUM(balut_count) FROM egg")->fetchColumn() ?: 0;
 
-        echo "<script>alert('You cannot delete your own account');</script>";
+// Fetch user egg records if specific user selected
+if ($selected_user_id > 0) {
+    $canView = false;
+    if ($user_role === 'admin') {
+        $canView = true;
     } else {
-
-        $stmt = $conn->prepare("SELECT username FROM users WHERE user_id=?");
-        $stmt->execute([$user_id]);
-        $user = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($user) {
-
-            $stmt = $conn->prepare("DELETE FROM users WHERE user_id=?");
-            $stmt->execute([$user_id]);
-
-            // Log activity
-            $action = "Admin deleted user: {$user['username']}";
-
-            $stmt = $conn->prepare("
-            INSERT INTO user_activity_logs (user_id, action)
-            VALUES (?,?)
-            ");
-
-            $stmt->execute([$_SESSION['user_id'], $action]);
+        $stmt = $conn->prepare("SELECT user_role FROM users WHERE user_id = ?");
+        $stmt->execute([$selected_user_id]);
+        $targetUser = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($targetUser && ($targetUser['user_role'] === 'user' || $selected_user_id == $user_id)) {
+            $canView = true;
         }
+    }
 
-        echo "<script>window.location.href='../../admin/dashboard.php'</script>";
+    if ($canView) {
+        $stmt = $conn->prepare("SELECT username, user_role, created_at FROM users WHERE user_id = ?");
+        $stmt->execute([$selected_user_id]);
+        $response['data']['selectedUser'] = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $stmt = $conn->prepare("
+            SELECT e.*, 
+                   DATEDIFF(NOW(), e.date_started_incubation) as days_in_incubation
+            FROM egg e
+            WHERE e.user_id = ?
+            ORDER BY e.date_started_incubation DESC
+        ");
+        $stmt->execute([$selected_user_id]);
+        $response['data']['eggRecords'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $stmt = $conn->prepare("
+            SELECT l.*, u.username
+            FROM user_activity_logs l
+            LEFT JOIN users u ON l.user_id = u.user_id
+            WHERE l.user_id = ?
+            ORDER BY l.log_date DESC
+            LIMIT 50
+        ");
+        $stmt->execute([$selected_user_id]);
+        $response['data']['activities'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 }
 
+$response['success'] = true;
+header('Content-Type: application/json');
+echo json_encode($response);
 ?>
-
-
-<table class="styled-table">
-
-    <thead>
-
-        <tr>
-
-            <th>ID</th>
-            <th>Username</th>
-            <th>Role</th>
-            <th>Created</th>
-            <th>Actions</th>
-
-        </tr>
-
-    </thead>
-
-    <tbody>
-
-        <?php foreach ($users as $user): ?>
-
-            <tr>
-
-                <td><?= $user['user_id'] ?></td>
-
-                <td><?= htmlspecialchars($user['username']) ?></td>
-
-                <td>
-
-                    <?php
-
-                    $role = $user['user_role'];
-
-                    if ($role == "admin") {
-                        echo "<span class='role-admin'>Admin</span>";
-                    } elseif ($role == "manager") {
-                        echo "<span class='role-manager'>Manager</span>";
-                    } else {
-                        echo "<span class='role-user'>User</span>";
-                    }
-
-                    ?>
-
-                </td>
-
-                <td>
-                    <?= date("M d, Y", strtotime($user['created_at'])) ?>
-                </td>
-
-                <td>
-
-                    <button class="btn-edit"
-                        onclick="openEditModal('<?= $user['user_id'] ?>','<?= $user['username'] ?>')">
-
-                        Edit
-
-                    </button>
-
-                    <form method="POST" style="display:inline;">
-
-                        <input type="hidden" name="user_id" value="<?= $user['user_id'] ?>">
-
-                        <button
-                            class="btn-delete"
-                            name="delete_user"
-                            onclick="return confirm('Delete this user?')">
-
-                            Delete
-
-                        </button>
-
-                    </form>
-
-                </td>
-
-            </tr>
-
-        <?php endforeach; ?>
-
-    </tbody>
-
-</table>
