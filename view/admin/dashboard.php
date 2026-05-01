@@ -649,7 +649,7 @@ $totalRecords = count($reportData);
                     <a href="../users/user-management.php"><i class="fas fa-users"></i> User Management</a>
                 </li>
                 <li class="<?= $activeTab == 'analytics' ? 'active' : '' ?>" data-tab="analytics">
-                    <a onclick="switchTab('analytics')"><i class="fas fa-chart-line"></i> System Analytics</a>
+                    <a onclick="switchTab('analytics')"><i class="fas fa-chart-line"></i> Analytics</a>
                 </li>
                 <li class="<?= $activeTab == 'reports' ? 'active' : '' ?>" data-tab="reports">
                     <a onclick="switchTab('reports')"><i class="fas fa-file-alt"></i> Reports</a>
